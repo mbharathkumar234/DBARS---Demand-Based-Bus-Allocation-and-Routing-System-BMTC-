@@ -1,0 +1,40 @@
+{
+  "categories": {
+    "ordinary": {
+      "stages": [
+        { "max_km": 2, "fare_inr": 6 },
+        { "max_km": 4, "fare_inr": 12 },
+        { "max_km": 6, "fare_inr": 15 },
+        { "max_km": 8, "fare_inr": 18 },
+        { "max_km": 10, "fare_inr": 20 },
+        { "max_km": 14, "fare_inr": 22 },
+        { "max_km": 18, "fare_inr": 24 },
+        { "max_km": 22, "fare_inr": 26 },
+        { "max_km": 26, "fare_inr": 28 },
+        { "max_km": null, "fare_inr": 30 }
+      ]
+    },
+    "vajra_ac": {
+      "stages": [
+        { "max_km": 2, "fare_inr": 10 },
+        { "max_km": 4, "fare_inr": 15 },
+        { "max_km": 6, "fare_inr": 20 },
+        { "max_km": 8, "fare_inr": 25 },
+        { "max_km": 10, "fare_inr": 30 },
+        { "max_km": 15, "fare_inr": 40 },
+        { "max_km": 20, "fare_inr": 50 },
+        { "max_km": 25, "fare_inr": 60 },
+        { "max_km": null, "fare_inr": 70 }
+      ]
+    },
+    "vayu_vajra_airport": {
+      "stages": [
+        { "max_km": 10, "fare_inr": 100 },
+        { "max_km": 20, "fare_inr": 150 },
+        { "max_km": 30, "fare_inr": 200 },
+        { "max_km": 40, "fare_inr": 250 },
+        { "max_km": null, "fare_inr": 300 }
+      ]
+    }
+  }
+}

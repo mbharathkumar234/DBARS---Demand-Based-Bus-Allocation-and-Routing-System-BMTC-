@@ -1,0 +1,66 @@
+services:
+  - type: web
+    name: dbars-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATASET_PATH
+        value: ../dataset/routes_cleaned.csv
+      - key: STOP_COORDINATES_PATH
+        value: ../dataset/stops_cleaned.csv
+      - key: METRO_DATASET_PATH
+        value: ../dataset/bengaluru_metro_network.csv
+      - key: FARES_DATASET_PATH
+        value: ../dataset/fares.json
+      - key: METRO_PDF_PATH
+        value: ../dataset/Metro_Map_2025_-_Bengaluru_City.pdf
+      - key: ARTIFACT_DIR
+        value: ./artifacts
+      - key: RATE_LIMIT_PER_MINUTE
+        value: 120
+      - key: MONGO_URI
+        # Account, voting, ticketing, and admin/depot features use MongoDB
+        # (backend/app/db/database.py); route prediction does not and is
+        # unaffected either way. Render has no built-in managed MongoDB, so
+        # set this to a real connection string (e.g. a MongoDB Atlas free
+        # tier cluster) in the Render dashboard -- `sync: false` means
+        # Render won't accept a value from this file, so nothing here can
+        # accidentally commit a real connection string (with embedded
+        # credentials) to version control. Left unset, the backend falls
+        # back to mongodb://localhost:27017, which does not exist on
+        # Render's web service host, and those features degrade to a
+        # clear 503 rather than the previous behaviour of crashing the
+        # entire app (including bus route prediction) at startup.
+        sync: false
+      - key: JWT_SECRET_KEY
+        # See app/auth/auth.py. Set a real random value in the Render
+        # dashboard (e.g. `openssl rand -hex 32`); `sync: false` again
+        # keeps it out of this file. Left unset, a random secret is
+        # generated per process instead, which invalidates all sessions on
+        # every restart/redeploy and breaks auth across multiple workers.
+        sync: false
+      - key: CORS_ORIGINS
+        # https://localhost is the origin Capacitor's Android WebView sends by
+        # default (androidScheme: 'https' in capacitor.config.ts) - without it
+        # here, the packaged app's requests get CORS-blocked even once the URL
+        # itself is reachable. The other two are for `npm run dev` in a browser.
+        value: https://localhost,http://localhost:5173,http://127.0.0.1:5173
+  - type: web
+    name: dbars-frontend
+    env: static
+    rootDir: frontend
+    # `property: host` below resolves to Render's *internal* hostname, not a
+    # usable public URL (no scheme, not necessarily the public onrender.com
+    # domain) - Render doesn't support interpolating it straight into an
+    # envVar value, so it's built into a real https:// URL here in the build
+    # command instead, where normal shell interpolation works.
+    buildCommand: 'VITE_API_URL="https://${BACKEND_HOST}.onrender.com" npm install && npm run build'
+    staticPublishPath: dist
+    envVars:
+      - key: BACKEND_HOST
+        fromService:
+          type: web
+          name: dbars-backend
+          property: host

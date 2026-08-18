@@ -1,0 +1,10 @@
+.venv/
+node_modules/
+.git/
+.gitignore
+.idea/
+.pytest_cache/
+.pytest_tmp/
+backend/.env
+backend/artifacts/
+android/build/

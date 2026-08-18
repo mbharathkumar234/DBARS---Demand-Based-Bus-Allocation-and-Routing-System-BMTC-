@@ -1,0 +1,57 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATASET_PATH: /app/dataset/routes_cleaned.csv
+      STOP_COORDINATES_PATH: /app/dataset/stops_cleaned.csv
+      METRO_DATASET_PATH: /app/dataset/bengaluru_metro_network.csv
+      FARES_DATASET_PATH: /app/dataset/fares.json
+      METRO_PDF_PATH: /app/dataset/Metro_Map_2025_-_Bengaluru_City.pdf
+      ARTIFACT_DIR: /app/artifacts
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,https://localhost
+      RATE_LIMIT_PER_MINUTE: 120
+      # "mongo" resolves via Docker Compose's built-in service-name DNS --
+      # this is the actual database the code connects to (see
+      # backend/app/db/database.py). Previously this was never set here at
+      # all, so the backend fell back to mongodb://localhost:27017, which
+      # inside this container refers to the container itself, not any
+      # other service -- MongoDB was unreachable regardless of what was
+      # (or wasn't) running on the host.
+      MONGO_URI: mongodb://mongo:27017
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+ 
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+ 
+  # Account, voting, ticketing, and admin/depot features use MongoDB (see
+  # backend/app/db/database.py). Bus route prediction does not use a
+  # database at all and works with this service stopped or removed
+  # entirely -- see that file's docstrings for why a missing MongoDB no
+  # longer takes the whole app down.
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+ 
+volumes:
+  mongo-data:

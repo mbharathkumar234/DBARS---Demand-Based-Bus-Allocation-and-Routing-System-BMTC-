@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+*.sqlite3
+.pytest_cache/
+.pytest_tmp/
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.idea/
+.vscode/
+
+# Environment files with secrets
+backend/.env
+.env
+
+# Mobile / Capacitor / Android
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+
+# Generated GTFS feed: ~14MB, rebuilt from the dataset in ~11s at startup.
+# Build output, not source.
+backend/artifacts/gtfs/
+
+# Claude Code local tool config. Contains absolute paths from the machine it
+# was generated on, and is per-developer state rather than project source.
+.claude/
+
+# OS & Logs
+.DS_Store
+Thumbs.db
+*.log
