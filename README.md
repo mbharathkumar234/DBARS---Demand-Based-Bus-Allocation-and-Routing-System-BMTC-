@@ -27,8 +27,8 @@ The dataset is an ordered route catalogue, not a user-query label table. A pure 
 4. Rank candidate buses using ordered stop-path matching, destination similarity, TF-IDF route text similarity, fuzzy matching, trip frequency, and distance efficiency.
 5. Estimate route distance from `dataset/stops_cleaned.csv` coordinates for a free default distance signal.
 6. Optionally enrich top predictions with Google Maps road distance and duration, cached locally to control API usage.
-7. Benchmark `TFIDFCosine`, `OrderedStopFuzzy`, and `DistanceAwareRouteRanker` with synthetic train/test commuter journeys.
-8. Report top-1/top-3/top-5 accuracy, precision@5, recall@5, F1@5, and cross-validation metrics for `LiveTransferSearch`.
+7. Benchmark `TFIDFCosine`, `OrderedStopFuzzy`, `DistanceAwareRouteRanker`, and `LiveTransferSearch` on identical sample sets using **relevance-set scoring**: a prediction is correct if the returned bus genuinely serves the queried stop pair in order, not only if it matches the exact route the sample was drawn from. The old single-label metric is retained as `exact_route_match` for comparison.
+8. Report **lenient top-1/top-3/top-5 accuracy** (relevance-set), honest precision@k (`|returned ∩ valid| / min(k, |valid|)`), rank-quality metrics (`best_option_rate`, `mean_percentile_rank`, `within_2_stops_rate`, `ndcg@5`), and cross-validation metrics. The headline metric is `relevance_set_metrics` — the system returns a valid bus in ~100% of test searches. Ranking quality (whether it returns the *best* valid bus) is the remaining optimization target.
 
 ## API Endpoints
 

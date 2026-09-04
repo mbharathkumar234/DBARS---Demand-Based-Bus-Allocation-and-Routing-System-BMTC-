@@ -14,6 +14,9 @@ jobs:
           python-version: "3.12"
       - run: pip install -r backend/requirements.txt
       - run: cd backend && pytest tests
+      # Phase 5 gate: re-derives the accuracy numbers live on a fixed
+      # seed and fails the build if any acceptance criterion regresses.
+      - run: cd backend && python scripts/verify_accuracy_plan.py
       - run: cd backend && python -m compileall app
 
   frontend:

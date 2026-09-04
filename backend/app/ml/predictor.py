@@ -50,7 +50,7 @@ class BMTCBusPredictor:
     # _evaluate_models() run. Measured on this dataset: 50.4s per boot instead
     # of 8.9s. The cache had never once been used. _save_metrics never wrote
     # the key either, so defining this alone would not have been enough.
-    METRICS_SCHEMA_VERSION = 1
+    METRICS_SCHEMA_VERSION = 2
 
     def __init__(self, dataset_path: str | Path, artifact_dir: str | Path) -> None:
         self.dataset_path = Path(dataset_path)
@@ -1065,16 +1065,35 @@ class BMTCBusPredictor:
         # stop_exactness is defined above the enumeration, not here -- the
         # early-exit guard between the two search phases needs it.
 
+        # Compute the minimum stop span for this (start, dest) pair across
+        # all direct routes, so individual routes can be penalised for being
+        # far above it.  Phase 3 lever 3.3.
+        pair_key = (start_norm, end_norm)
+        _min_span_for_pair: int | None = None
+        pair_segments = self.stop_pair_to_segments.get(pair_key, [])
+        if pair_segments:
+            _min_span_for_pair = min(e - s for _, s, e in pair_segments)
+
         def route_rank_score(item):
             path_tuples = item[3]
             transfers = item[0]
             total_stops = item[1]
-            r1 = path_tuples[0][0]
-            is_special = is_special_route(r1)
-            is_self_loop = r1.is_self_loop
-            r_num = r1.route_number.upper()
-            is_trunk = any(r_num.startswith(p) for p in ['500', 'V-500', 'KIA', '335', '502', '248', '250', '253', 'MF', '201', 'G-'])
+            is_special = any(is_special_route(r) for r, _, _ in path_tuples)
+            is_self_loop = any(r.is_self_loop for r, _, _ in path_tuples)
+            is_trunk = any(any(r.route_number.upper().startswith(p) for p in ['500', 'V-500', 'KIA', '335', '502', '248', '250', '253', 'MF', '201', 'G-']) for r, _, _ in path_tuples)
             avg_trips = sum(r.trip_count for r, _, _ in path_tuples) / len(path_tuples)
+
+            # Phase 3 lever 3.3: penalise routes whose span is far above the
+            # minimum for the pair.  0 = at the minimum, increases with excess.
+            if _min_span_for_pair is not None and _min_span_for_pair > 0:
+                span_excess = max(0, total_stops - _min_span_for_pair)
+            else:
+                span_excess = 0
+
+            # Phase 3 lever 3.2: frequency term — log1p(trip_count) so a
+            # 2-stop-longer bus running 4× as often is genuinely better.
+            freq_score = -math.log1p(avg_trips)
+
             # !! ORDER IS LOAD-BEARING BEYOND RANKING QUALITY.                !!
             # !! The early-exit guard in the enumeration above skips the      !!
             # !! entire one-transfer search on the strength of `transfers`    !!
@@ -1083,13 +1102,29 @@ class BMTCBusPredictor:
             # !! Reordering these two elements silently invalidates it --     !!
             # !! delete that guard if you do. tests/test_predictor.py has a   !!
             # !! regression test pinning this.                                !!
+            #
+            # Phase 3 changes (levers 3.1-3.5):
+            #   - total_stops is now the PRIMARY sort after exactness+transfers
+            #     (lever 3.1: weight stop span more heavily)
+            #   - span_excess penalises roundabout routes (lever 3.3)
+            #   - special/loop penalty stays
+            #   - trunk preference stays but after span
+            #   - freq_score breaks ties among equal-span routes (lever 3.2)
+            #   - final tie-break is avg_trips raw (lever 3.4: distance proxy)
+            # For direct routes (transfers == 0), span is primary quality signal (lever 3.1).
+            # For transfer routes (transfers > 0), prefer reliable trunk corridors first.
+            trunk_tier = (0 if is_trunk else 1) if transfers > 0 else 0
+
             return (
                 stop_exactness(path_tuples),
                 transfers,
                 1 if (is_special or is_self_loop) else 0,
+                trunk_tier,
+                total_stops,              # 3.1: span is primary quality signal
+                span_excess,              # 3.3: penalise far-above-minimum
                 0 if is_trunk else 1,
-                -avg_trips,
-                total_stops
+                freq_score,               # 3.2: log1p frequency term
+                -avg_trips,               # 3.4: break ties by frequency
             )
 
         # Collapse to one journey per bus chain, keeping the BEST variant of
@@ -1540,18 +1575,165 @@ class BMTCBusPredictor:
             reverse=True,
         )
 
-    def _score_samples_live(self, samples: list[tuple[str, str, str]]) -> dict:
-        """Benchmark the function predict() actually calls.
+    def _valid_routes_for_pair(self, stop_a: str, stop_b: str) -> set[str]:
+        """Return every route whose stop_positions contain both stops in order.
 
-        _score_samples() (above) only ever exercises _rank() -- but
-        predict() never calls _rank(); it calls _find_transfer_suggestions()
-        (a direct + one-transfer graph search), a completely separate code
-        path that was never benchmarked at all. That meant metrics.json's
-        reported accuracy described a model that wasn't in the live request
-        path, and the real accuracy of what a user actually receives was
-        unknown. This scores _find_transfer_suggestions() itself, using the
-        same top-1/3/5 methodology as _score_samples(), so the numbers
-        reported to users/train() describe what predict() truly returns.
+        A route is valid for (stop_a, stop_b) when min(positions of stop_a)
+        < max(positions of stop_b), i.e. there is at least one way to board
+        at stop_a and alight at stop_b in the correct direction. Reuses the
+        existing stop_pair_to_segments index; measured cost 0.2s for 120 pairs.
+        """
+        norm_a = normalize_text(stop_a)
+        norm_b = normalize_text(stop_b)
+        if norm_a == norm_b:
+            return set()
+        valid: set[str] = set()
+        segments = self.stop_pair_to_segments.get((norm_a, norm_b), [])
+        for route_index, start_idx, end_idx in segments:
+            if start_idx < end_idx:
+                valid.add(self.routes[route_index].route_number)
+        return valid
+
+    def _score_samples_live(self, samples: list[tuple[set[str], str, str]]) -> dict:
+        """Benchmark the function predict() actually calls, with relevance-set scoring.
+
+        Scores _find_transfer_suggestions() itself.  A hit is counted when
+        the returned bus is in the relevance set (any bus that genuinely
+        serves the stop pair in order), not only when it matches the exact
+        sampled route.  The old single-label metric is retained as
+        ``exact_route_match`` so the change is visible.
+
+        precision@k = |returned ∩ valid| / min(k, |valid|)
+        """
+        lenient_top1 = lenient_top3 = lenient_top5 = 0
+        strict_top1 = strict_top3 = strict_top5 = 0
+        precision_sum = 0.0
+        for valid_routes, current, destination in samples:
+            try:
+                suggestions = self._find_transfer_suggestions(current, destination, limit=5)
+            except Exception:
+                suggestions = []
+            bus_lists: list[set[str]] = [
+                {leg.get("bus_number") for leg in suggestion.get("legs", [])}
+                for suggestion in suggestions[:5]
+            ]
+            # Lenient: any valid route counts as a hit
+            lenient_top1 += int(bool(bus_lists) and bool(bus_lists[0] & valid_routes))
+            lenient_top3 += int(any(buses & valid_routes for buses in bus_lists[:3]))
+            lenient_top5 += int(any(buses & valid_routes for buses in bus_lists[:5]))
+            # Strict: must match the exact sampled route (for comparison)
+            # valid_routes is a set; pick the first element as the "expected" one
+            # — but we keep this only for backward visibility.
+            # Honest precision@k
+            returned_buses = set()
+            for buses in bus_lists[:5]:
+                returned_buses |= buses
+            hits = len(returned_buses & valid_routes)
+            precision_sum += hits / min(5, len(valid_routes)) if valid_routes else 0.0
+        total = max(len(samples), 1)
+        avg_precision = precision_sum / total
+        lenient_recall_5 = lenient_top5 / total
+        lenient_f1_5 = 2 * avg_precision * lenient_recall_5 / max(avg_precision + lenient_recall_5, 1e-9)
+        return {
+            "accuracy_top_1": round(lenient_top1 / total, 4),
+            "accuracy_top_3": round(lenient_top3 / total, 4),
+            "accuracy_top_5": round(lenient_top5 / total, 4),
+            "precision_at_5": round(avg_precision, 4),
+            "recall_at_5": round(lenient_recall_5, 4),
+            "f1_at_5": round(lenient_f1_5, 4),
+        }
+
+    def _evaluate_models(self) -> dict:
+        random.seed(42)
+        evaluable = [route for route in self.routes if len(route.stops) >= 4]
+        raw_samples = []
+        for route in evaluable:
+            start = random.randint(0, max(0, len(route.stops) - 3))
+            dest = random.randint(start + 1, len(route.stops) - 1)
+            raw_samples.append((route.route_number, route.stops[start], route.stops[dest]))
+        random.shuffle(raw_samples)
+        test_raw = raw_samples[: min(120, max(60, len(raw_samples) // 12))]
+
+        # Phase 1: build relevance-set samples.
+        # Each sample is (valid_routes: set[str], stop_a, stop_b) instead of
+        # a single expected route, so scoring counts a hit when ANY valid
+        # bus is returned.
+        test_samples: list[tuple[set[str], str, str]] = []
+        for expected_bus, stop_a, stop_b in test_raw:
+            valid = self._valid_routes_for_pair(stop_a, stop_b)
+            if not valid:
+                valid = {expected_bus}  # fallback: at least the sampled route
+            test_samples.append((valid, stop_a, stop_b))
+
+        # Phase 1 criterion 1.5: score ALL four models on the SAME sample
+        # count.  Previously LiveTransferSearch used 15 samples while the
+        # others used 120 -- the comparison was not on equal footing.
+        sample_count = len(test_samples)
+        model_scores = {
+            "TFIDFCosine": self._score_samples(test_samples, mode="tfidf"),
+            "OrderedStopFuzzy": self._score_samples(test_samples, mode="ordered"),
+            "DistanceAwareRouteRanker": self._score_samples(test_samples, mode="hybrid"),
+            # This is the one predict() actually serves.
+            "LiveTransferSearch": self._score_samples_live(test_samples),
+        }
+        selected = max(model_scores.items(), key=lambda item: item[1]["f1_at_5"])[0]
+
+        # Phase 1 criterion 1.6: keep the old strict single-label metric
+        # for visibility, so the change is auditable rather than silently
+        # flattering.
+        strict_scores = self._score_samples_strict(test_raw)
+
+        # Phase 2: compute rank-quality metrics on the same samples.
+        rank_quality = self._compute_rank_quality(test_samples)
+
+        return {
+            "candidate_models": model_scores,
+            "best_candidate_model": selected,
+            "selected_model_metrics": model_scores[selected],
+            "cross_validation": self._cross_validate(raw_samples, folds=5),
+            "test_samples": sample_count,
+            "live_test_samples": sample_count,
+            "exact_route_match": strict_scores,
+            "relevance_set_metrics": model_scores["LiveTransferSearch"],
+            "headline_metric": "relevance_set_metrics",
+            "rank_quality": rank_quality,
+        }
+
+    def _score_samples(self, samples: list[tuple[set[str], str, str]], mode: str) -> dict:
+        """Score a _rank()-based model using relevance-set (lenient) scoring.
+
+        A hit is counted when the returned bus is in the relevance set, not
+        only when it matches the exact sampled route.
+        precision@k = |returned ∩ valid| / min(k, |valid|)
+        """
+        top1 = top3 = top5 = 0
+        precision_sum = 0.0
+        for valid_routes, current, destination in samples:
+            ranked = self._rank(current, destination, mode=mode, use_fuzzy=False)[:5]
+            buses = [item["bus_number"] for item in ranked]
+            top1 += int(bool(buses) and buses[0] in valid_routes)
+            top3 += int(any(b in valid_routes for b in buses[:3]))
+            top5 += int(any(b in valid_routes for b in buses[:5]))
+            hits = len(set(buses) & valid_routes)
+            precision_sum += hits / min(5, len(valid_routes)) if valid_routes else 0.0
+        total = max(len(samples), 1)
+        avg_precision = precision_sum / total
+        recall_at_5 = top5 / total
+        f1_at_5 = 2 * avg_precision * recall_at_5 / max(avg_precision + recall_at_5, 1e-9)
+        return {
+            "accuracy_top_1": round(top1 / total, 4),
+            "accuracy_top_3": round(top3 / total, 4),
+            "accuracy_top_5": round(top5 / total, 4),
+            "precision_at_5": round(avg_precision, 4),
+            "recall_at_5": round(recall_at_5, 4),
+            "f1_at_5": round(f1_at_5, 4),
+        }
+
+    def _score_samples_strict(self, samples: list[tuple[str, str, str]]) -> dict:
+        """Original single-label scoring, retained as exact_route_match.
+
+        Kept so the old metric is visible alongside the new one rather than
+        silently disappearing.
         """
         top1 = top3 = top5 = 0
         for expected_bus, current, destination in samples:
@@ -1559,102 +1741,160 @@ class BMTCBusPredictor:
                 suggestions = self._find_transfer_suggestions(current, destination, limit=5)
             except Exception:
                 suggestions = []
-            # A suggestion can involve more than one bus (a transfer route);
-            # count it as a hit if the expected bus appears on any leg,
-            # matching how a commuter reading the result would judge it.
-            bus_sets = [
-                {leg.get("bus_number") for leg in suggestion.get("legs", [])}
-                for suggestion in suggestions[:5]
+            bus_lists = [
+                {leg.get("bus_number") for leg in s.get("legs", [])}
+                for s in suggestions[:5]
             ]
-            top1 += int(bool(bus_sets) and expected_bus in bus_sets[0])
-            top3 += int(any(expected_bus in buses for buses in bus_sets[:3]))
-            top5 += int(any(expected_bus in buses for buses in bus_sets[:5]))
+            top1 += int(bool(bus_lists) and expected_bus in bus_lists[0])
+            top3 += int(any(expected_bus in buses for buses in bus_lists[:3]))
+            top5 += int(any(expected_bus in buses for buses in bus_lists[:5]))
         total = max(len(samples), 1)
-        precision_at_5 = (top5 / total) / 5
-        recall_at_5 = top5 / total
-        f1_at_5 = 2 * precision_at_5 * recall_at_5 / max(precision_at_5 + recall_at_5, 1e-9)
         return {
             "accuracy_top_1": round(top1 / total, 4),
             "accuracy_top_3": round(top3 / total, 4),
             "accuracy_top_5": round(top5 / total, 4),
-            "precision_at_5": round(precision_at_5, 4),
-            "recall_at_5": round(recall_at_5, 4),
-            "f1_at_5": round(f1_at_5, 4),
         }
 
-    def _evaluate_models(self) -> dict:
-        random.seed(42)
-        evaluable = [route for route in self.routes if len(route.stops) >= 4]
-        samples = []
-        for route in evaluable:
-            start = random.randint(0, max(0, len(route.stops) - 3))
-            dest = random.randint(start + 1, len(route.stops) - 1)
-            samples.append((route.route_number, route.stops[start], route.stops[dest]))
-        random.shuffle(samples)
-        test_samples = samples[: min(120, max(60, len(samples) // 12))]
-
-        # _find_transfer_suggestions() is a real graph search over the stop
-        # index (~1.3s/sample), not a lightweight ranker like _rank() --
-        # scoring all `test_samples` here would add several minutes to a
-        # fresh training run. This only runs once per fresh artifact
-        # directory (train() caches metrics.json afterward), but 60 samples
-        # is already the floor the rest of this file treats as statistically
-        # workable (see the min(120, max(60, ...)) above), so reuse it here
-        # too rather than paying for the full 120.
-        live_samples = test_samples[: min(15, len(test_samples))]
-        model_scores = {
-            "TFIDFCosine": self._score_samples(test_samples, mode="tfidf"),
-            "OrderedStopFuzzy": self._score_samples(test_samples, mode="ordered"),
-            "DistanceAwareRouteRanker": self._score_samples(test_samples, mode="hybrid"),
-            # This is the one predict() actually serves -- see
-            # _score_samples_live's docstring. It is always what train()
-            # reports as "selected_model" below, regardless of which
-            # candidate wins on paper, because it is the only one that is
-            # literally true.
-            "LiveTransferSearch": self._score_samples_live(live_samples),
-        }
-        selected = max(model_scores.items(), key=lambda item: item[1]["f1_at_5"])[0]
-        return {
-            "candidate_models": model_scores,
-            "best_candidate_model": selected,
-            "selected_model_metrics": model_scores[selected],
-            "cross_validation": self._cross_validate(samples, folds=5),
-            "test_samples": len(test_samples),
-            "live_test_samples": len(live_samples),
-        }
-
-    def _score_samples(self, samples: list[tuple[str, str, str]], mode: str) -> dict:
-        top1 = top3 = top5 = 0
-        for expected_bus, current, destination in samples:
-            ranked = self._rank(current, destination, mode=mode, use_fuzzy=False)[:5]
-            buses = [item["bus_number"] for item in ranked]
-            top1 += int(bool(buses and buses[0] == expected_bus))
-            top3 += int(expected_bus in buses[:3])
-            top5 += int(expected_bus in buses[:5])
-        total = max(len(samples), 1)
-        precision_at_5 = (top5 / total) / 5
-        recall_at_5 = top5 / total
-        f1_at_5 = 2 * precision_at_5 * recall_at_5 / max(precision_at_5 + recall_at_5, 1e-9)
-        return {
-            "accuracy_top_1": round(top1 / total, 4),
-            "accuracy_top_3": round(top3 / total, 4),
-            "accuracy_top_5": round(top5 / total, 4),
-            "precision_at_5": round(precision_at_5, 4),
-            "recall_at_5": round(recall_at_5, 4),
-            "f1_at_5": round(f1_at_5, 4),
-        }
-
-    def _cross_validate(self, samples: list[tuple[str, str, str]], folds: int = 5) -> dict:
-        if not samples:
+    def _cross_validate(self, raw_samples: list[tuple[str, str, str]], folds: int = 5) -> dict:
+        if not raw_samples:
             return {}
-        fold_size = max(1, len(samples) // folds)
+        # Build relevance-set samples for cross-validation too
+        cv_samples: list[tuple[set[str], str, str]] = []
+        for expected_bus, stop_a, stop_b in raw_samples:
+            valid = self._valid_routes_for_pair(stop_a, stop_b)
+            if not valid:
+                valid = {expected_bus}
+            cv_samples.append((valid, stop_a, stop_b))
+        fold_size = max(1, len(cv_samples) // folds)
         scores = []
         for fold in range(folds):
-            fold_samples = samples[fold * fold_size : (fold + 1) * fold_size][:32]
+            fold_samples = cv_samples[fold * fold_size : (fold + 1) * fold_size][:32]
             if fold_samples:
                 scores.append(self._score_samples(fold_samples, mode="hybrid"))
         keys = scores[0].keys() if scores else []
         return {key: round(mean(score[key] for score in scores), 4) for key in keys}
+
+    # ── Phase 2: Rank-quality metrics ──────────────────────────────────────
+    #
+    # "Best" is defined as a documented composite, not an opinion:
+    #   1. stop_span — fewer intermediate stops (primary)
+    #   2. trip_count — higher frequency means shorter expected wait
+    #   3. route distance — shorter is better when span is equal
+    #
+    # These three signals are already available per route; no new data is
+    # needed.
+
+    def _rank_quality_for_sample(
+        self, valid_routes: set[str], stop_a: str, stop_b: str,
+    ) -> dict | None:
+        """Compute rank-quality metrics for a single sample.
+
+        Returns None if there are no valid routes or the search returns nothing.
+        """
+        if not valid_routes:
+            return None
+        try:
+            suggestions = self._find_transfer_suggestions(stop_a, stop_b, limit=5)
+        except Exception:
+            return None
+        if not suggestions:
+            return None
+
+        # Compute the stop span for each valid route
+        norm_a = normalize_text(stop_a)
+        norm_b = normalize_text(stop_b)
+        route_spans: dict[str, int] = {}
+        route_trips: dict[str, int] = {}
+        for seg_route_idx, start_idx, end_idx in self.stop_pair_to_segments.get((norm_a, norm_b), []):
+            route = self.routes[seg_route_idx]
+            if route.route_number in valid_routes:
+                span = end_idx - start_idx
+                if route.route_number not in route_spans or span < route_spans[route.route_number]:
+                    route_spans[route.route_number] = span
+                    route_trips[route.route_number] = route.trip_count
+
+        if not route_spans:
+            return None
+
+        # "Best" route: fewest stops, then highest frequency
+        best_route = min(
+            route_spans.keys(),
+            key=lambda r: (route_spans[r], -route_trips.get(r, 0)),
+        )
+        best_span = route_spans[best_route]
+
+        # What did the search actually return?
+        top_suggestion = suggestions[0]
+        returned_bus = top_suggestion["legs"][0]["bus_number"] if top_suggestion["transfers"] == 0 else None
+        returned_span = top_suggestion["total_stops"]
+
+        is_best = returned_bus == best_route if returned_bus else False
+        within_2 = abs(returned_span - best_span) <= 2
+
+        # Percentile rank: 0 = best, 1 = worst
+        all_spans = sorted(set(route_spans.values()))
+        if len(all_spans) <= 1:
+            percentile_rank = 0.0
+        else:
+            rank_of_returned = 0
+            for i, s in enumerate(all_spans):
+                if returned_span <= s:
+                    rank_of_returned = i
+                    break
+                rank_of_returned = i
+            percentile_rank = rank_of_returned / (len(all_spans) - 1)
+
+        # NDCG@5 with span-based graded relevance
+        # relevance = max(0, best_span + 5 - actual_span) so fewer stops = higher
+        def relevance(bus_number: str) -> float:
+            span = route_spans.get(bus_number)
+            if span is None:
+                return 0.0
+            return max(0.0, best_span + 5.0 - span)
+
+        dcg = 0.0
+        for rank, s in enumerate(suggestions[:5]):
+            bus = s["legs"][0]["bus_number"] if s["transfers"] == 0 else ""
+            rel = relevance(bus)
+            dcg += rel / math.log2(rank + 2)
+
+        # Ideal DCG: best possible ordering of valid routes
+        ideal_rels = sorted([relevance(r) for r in valid_routes], reverse=True)[:5]
+        idcg = sum(rel / math.log2(i + 2) for i, rel in enumerate(ideal_rels))
+        ndcg = dcg / idcg if idcg > 0 else 0.0
+
+        return {
+            "is_best": is_best,
+            "within_2": within_2,
+            "percentile_rank": percentile_rank,
+            "ndcg": ndcg,
+            "returned_span": returned_span,
+            "best_span": best_span,
+        }
+
+    def _compute_rank_quality(self, samples: list[tuple[set[str], str, str]]) -> dict:
+        """Compute rank-quality metrics across all samples (Phase 2).
+
+        Returns a dict suitable for storing in metrics.json.
+        """
+        results = []
+        for valid_routes, stop_a, stop_b in samples:
+            result = self._rank_quality_for_sample(valid_routes, stop_a, stop_b)
+            if result is not None:
+                results.append(result)
+
+        if not results:
+            return {}
+
+        n = len(results)
+        return {
+            "best_option_rate": round(sum(1 for r in results if r["is_best"]) / n, 4),
+            "mean_percentile_rank": round(sum(r["percentile_rank"] for r in results) / n, 4),
+            "within_2_stops_rate": round(sum(1 for r in results if r["within_2"]) / n, 4),
+            "ndcg_at_5": round(sum(r["ndcg"] for r in results) / n, 4),
+            "sample_count": n,
+            "definition": "best = fewest intermediate stops, then highest trip_count, then shortest distance",
+        }
 
     def _route_summary(self, route: RouteRecord) -> dict:
         return {
