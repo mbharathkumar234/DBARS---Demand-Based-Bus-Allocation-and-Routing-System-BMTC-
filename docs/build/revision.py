@@ -171,35 +171,42 @@ def build():
               "on pairs where a MEDIAN OF 22 buses are all correct. A perfect system picking uniformly "
               "among valid buses would have scored only 0.16. It was replaced with relevance-set "
               "scoring. All four models now run on an identical N=120.", bold=True)
-    table(doc, ["Model", "Relevance-set\ntop-1", "Strict\ntop-1", "Note"], [
+    table(doc, ["Model", "Coverage\n(valid-route)", "Strict\ntop-1", "Note"], [
         ["TFIDFCosine", "1.0000", "0.1667", "Baseline ranker"],
         ["OrderedStopFuzzy", "1.0000", "0.1583", "Baseline ranker"],
         ["DistanceAwareRouteRanker", "1.0000", "0.1583", "Baseline ranker"],
         ["LiveTransferSearch (SHIPPED)", "1.0000", "0.1917", "What the API actually returns"],
     ], widths=[2.0, 1.0, 0.9, 2.9])
-    para(doc, "Correctness is saturated - a valid bus is returned in 100% of searches - so the real "
-              "target became RANK QUALITY: is the returned bus the BEST valid option (fewest stops, "
-              "then highest frequency)?")
-    table(doc, ["Rank-quality metric", "Baseline", "After Phase 3", "Threshold"], [
+    para(doc, "CRITICAL: the coverage column is NOT accuracy. The relevance set is read from "
+              "stop_pair_to_segments - the SAME index the search uses to find its candidates - so "
+              "\"did it return a valid route?\" is close to tautological and cannot drop below 1.0 "
+              "without an outright bug. It proves the search never fails to find something valid; it "
+              "says nothing about quality. The HEADLINE metric is rank_quality, because it is the "
+              "only one the system can actually fail - and at baseline it did, at 0.57.", bold=True)
+    table(doc, ["Rank-quality metric (HEADLINE)", "Baseline", "After Phase 3", "Threshold"], [
         ["best_option_rate", "0.57", "0.7167", ">= 0.70"],
         ["mean_percentile_rank (0 = best)", "0.14", "0.0437", "<= 0.10"],
         ["within_2_stops_rate", "0.90", "0.9917", ">= 0.92"],
-        ["lenient top-1 (must not regress)", "1.0000", "1.0000", ">= 0.95"],
-        ["p90 search latency", "1.52 s", "1.13 s", "<= 1.6 s"],
+        ["ndcg_at_5", "not recorded", "0.9810", "-"],
+        ["coverage (must not regress)", "1.0000", "1.0000", ">= 0.95"],
+        ["p90 search latency", "1.52 s", "1.19 s", "<= 1.6 s"],
     ], widths=[2.4, 1.1, 1.3, 2.0])
     para(doc, "Levers applied: stop span made the primary ranking signal, a log1p(trip_count) "
               "frequency term, and a penalty for routes whose span is far above the minimum for the "
               "pair. Each was applied in isolation and kept only if the metric improved. Verified by "
               "scripts/verify_accuracy_plan.py, which re-derives the numbers live on a fixed seed "
-              "rather than trusting metrics.json - 19 criteria, exit 0.")
-    callout(doc, "How to say this - do NOT say \"I improved accuracy from 20% to 100%\"",
-            "\"The benchmark was single-label: it required naming the exact route the sample was drawn "
-            "from, on pairs where a median of 22 buses are all correct. I measured a ceiling of 0.16 "
-            "for a perfect system under that metric. I replaced it with relevance-set scoring, which "
-            "showed the search returns a valid bus in 100% of searches, and added a rank-quality "
-            "metric measuring whether the BEST valid bus ranks first - 57% at baseline, 72% after "
-            "weighting stop span and frequency.\" That answer is about measurement design, which is "
-            "worth far more than a large number.", warn=True)
+              "rather than trusting metrics.json - 21 criteria, exit 0. Criteria 1.7 and 1.8 fail the "
+              "build if the headline is ever set back to a coverage metric.")
+    callout(doc, "How to say this - NEVER \"I improved accuracy from 20% to 100%\"",
+            "That phrasing is indistinguishable from moving the goalposts, and an examiner will say so "
+            "in one sentence. Say instead: \"The benchmark was single-label - it demanded the exact "
+            "route each sample was drawn from, on pairs where a median of 22 buses are all correct. I "
+            "measured its ceiling at 0.16, so it could not discriminate. Replacing it showed the "
+            "search always returns a valid route, but I report that as COVERAGE rather than accuracy, "
+            "because the validity test reads the same index the search does - it is close to "
+            "circular. The metric that could actually be failed was whether the BEST valid route ranks "
+            "first: 57% at baseline, 72% after weighting stop span and frequency.\" Showing that you "
+            "found the limits of your own metric is worth more than any number.", warn=True)
 
     # 10 SECURITY
     h(doc, 1, "10. Security summary")

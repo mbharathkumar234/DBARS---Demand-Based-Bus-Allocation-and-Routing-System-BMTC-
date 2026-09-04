@@ -133,3 +133,17 @@ def test_metrics_json_declares_headline_metric(metrics) -> None:
     headline = metrics.get("headline_metric")
     assert headline is not None, "headline_metric missing from metrics"
     assert headline in metrics, f"headline_metric '{headline}' does not name a key in metrics"
+    # The headline must be a metric the system can FAIL. coverage /
+    # relevance_set scoring derives its relevance set from the same
+    # stop_pair_to_segments index the search uses to generate candidates,
+    # so a near-1.0 score there is close to tautological and has almost no
+    # discriminating power. rank_quality scores against an independent
+    # criterion (fewest stops), which the ranker did fail at 0.57.
+    assert headline == "rank_quality", (
+        "headline_metric must be rank_quality, not a near-tautological coverage metric; "
+        f"got {headline!r}"
+    )
+    caveat = metrics.get("coverage_caveat", "")
+    assert "same index" in caveat.lower(), (
+        "metrics must document why the coverage metric is not the headline"
+    )

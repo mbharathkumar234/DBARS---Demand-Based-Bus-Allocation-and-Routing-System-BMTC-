@@ -105,6 +105,37 @@ work was done.
 
 ---
 
+## Addendum (post-implementation) — the coverage metric is near-circular
+
+Implementing the plan exposed a flaw in the plan itself, recorded here rather
+than quietly corrected.
+
+`_valid_routes_for_pair()` builds the relevance set by reading
+`stop_pair_to_segments[(A, B)]` — **the same index `_find_transfer_suggestions()`
+uses to generate its candidates.** So the lenient metric asks "did the search
+return a route from the index it searched?", which is close to tautological. It
+cannot fall meaningfully below 1.0 without an outright bug.
+
+Consequences, adopted in the implementation:
+
+* The relevance-set number is reported as **coverage, not accuracy**. It proves
+  the search never fails to find a valid route. It says nothing about quality.
+* **`rank_quality` is the headline metric**, because it scores against an
+  independent criterion (fewest stops, then frequency) that the ranker was not
+  guaranteed to satisfy — and did not, at 0.57 before tuning. A metric you can
+  fail is a metric that means something.
+* `metrics.json` carries a `coverage_caveat` field stating this, and verifier
+  criteria 1.7 and 1.8 fail the build if the headline is ever set back to a
+  coverage metric or the caveat is removed.
+
+**Never present this work as "accuracy improved from 20% to 100%."** Changing a
+metric and reporting a higher number is indistinguishable from moving the
+goalposts unless you can show the old metric could not discriminate (ceiling
+0.16, measured) and that the new headline is one you can fail (0.57, measured).
+Both are true here — but the burden of proof is entirely on the presenter.
+
+---
+
 ## Phase 1 — Make the metric measure correctness
 
 **Goal:** the reported accuracy reflects whether the answer is right.

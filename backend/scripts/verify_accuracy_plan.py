@@ -70,7 +70,7 @@ def main() -> int:
     rsm = metrics.get("relevance_set_metrics", {})
     lenient_top1 = rsm.get("accuracy_top_1", 0)
     sample_count = metrics.get("live_test_samples", 0)
-    c = Criterion("1", "1.2", f"lenient top-1 = {lenient_top1}  (threshold >= 0.95, n={sample_count})")
+    c = Criterion("1", "1.2", f"COVERAGE (not accuracy): valid-route rate = {lenient_top1}  (threshold >= 0.95, n={sample_count})")
     c.check(lenient_top1 >= 0.95)
     criteria.append(c)
 
@@ -86,8 +86,21 @@ def main() -> int:
     c.check("exact_route_match" in metrics)
     criteria.append(c)
 
-    c = Criterion("1", "1.5", f"headline metric declared ({metrics.get('headline_metric', 'missing')})")
-    c.check("headline_metric" in metrics and metrics["headline_metric"] in metrics)
+    headline = metrics.get("headline_metric", "missing")
+    c = Criterion("1", "1.5", f"headline metric declared ({headline})")
+    c.check("headline_metric" in metrics and headline in metrics)
+    criteria.append(c)
+
+    # The headline must be a metric the system can actually FAIL.
+    # coverage/relevance_set is near-tautological (its relevance set comes
+    # from the same index the search uses), so it must not be the headline.
+    c = Criterion("1", "1.7", f"headline is a discriminating metric, not coverage ({headline})")
+    c.check(headline == "rank_quality")
+    criteria.append(c)
+
+    c = Criterion("1", "1.8", "coverage_caveat documents the near-circularity")
+    caveat = metrics.get("coverage_caveat", "")
+    c.check(bool(caveat) and "same index" in caveat.lower())
     criteria.append(c)
 
     # Determine python executable (prefer local backend .venv if available)

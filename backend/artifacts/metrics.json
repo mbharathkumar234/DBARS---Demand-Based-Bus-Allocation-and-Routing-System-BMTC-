@@ -67,7 +67,16 @@
       "recall_at_5": 1.0,
       "f1_at_5": 1.0
     },
-    "headline_metric": "relevance_set_metrics",
+    "coverage_metrics": {
+      "accuracy_top_1": 1.0,
+      "accuracy_top_3": 1.0,
+      "accuracy_top_5": 1.0,
+      "precision_at_5": 1.0,
+      "recall_at_5": 1.0,
+      "f1_at_5": 1.0
+    },
+    "coverage_caveat": "relevance_set_metrics / coverage_metrics answer 'did the search return a route that serves this stop pair in order?'. The relevance set is computed from stop_pair_to_segments -- the SAME index the search uses to generate candidates -- so a score near 1.0 is close to tautological and cannot fall much below it without an outright bug. Treat this as COVERAGE (the search never fails to find a valid route), not as accuracy. The metric with real discriminating power is rank_quality, which scores against an independent criterion the ranker is not guaranteed to satisfy -- and did not, at 0.57 before tuning.",
+    "headline_metric": "rank_quality",
     "rank_quality": {
       "best_option_rate": 0.7167,
       "mean_percentile_rank": 0.0437,
@@ -76,7 +85,7 @@
       "sample_count": 120,
       "definition": "best = fewest intermediate stops, then highest trip_count, then shortest distance"
     },
-    "training_seconds": 6.855,
+    "training_seconds": 6.947,
     "dataset_profile": {
       "rows": 6737,
       "unique_bus_numbers": 3940,
@@ -115,5 +124,5 @@
     "max_stops_per_route": 95,
     "avg_stops_per_route": 30.29
   },
-  "trained_at": 1788528127.1966746
+  "trained_at": 1788531801.3023682
 }

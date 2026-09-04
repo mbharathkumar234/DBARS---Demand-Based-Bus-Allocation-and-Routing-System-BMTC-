@@ -46,18 +46,35 @@ def section_16(doc):
               "a perfect system picking uniformly among valid buses would score top-1 of only 0.16. "
               "The evaluation now uses relevance-set scoring: any route that legitimately serves the stop pair "
               "in the correct order is a valid answer. All models are evaluated on an identical sample count (N=120).")
-    table(doc, ["Model", "Relevance-Set Top-1", "Lenient P@5", "Strict Top-1 (Exact Match)", "Strict Top-5"], [
-        ["TFIDFCosine", "1.0000", "1.0000", "0.1667", "0.4417"],
-        ["OrderedStopFuzzy", "1.0000", "1.0000", "0.1583", "0.3750"],
-        ["DistanceAwareRouteRanker", "1.0000", "1.0000", "0.1583", "0.3833"],
-        ["LiveTransferSearch (SHIPPED)", "1.0000", "1.0000", "0.1917", "0.4000"],
-    ], widths=[2.2, 1.1, 1.0, 1.2, 1.0])
-    para(doc, "Cross-validated (5-fold) figures for the shipped model: top-1 1.0000, top-3 1.0000, "
-              "top-5 1.0000. Under single-label strict match, exact_route_match reports top-1 0.1917, top-3 0.3250, top-5 0.4000. "
-              "Because correctness is saturated (100% of searches return a valid bus), optimization focuses on "
-              "rank quality: whether the returned bus is the best available option (fewest stops, highest frequency, shortest distance). "
-              "LiveTransferSearch achieves a best_option_rate of 71.7%, mean_percentile_rank of 0.044 (top 4.4% of options), "
-              "and within_2_stops_rate of 99.2%.")
+    table(doc, ["Model", "Coverage\n(valid-route rate)", "Strict Top-1\n(exact match)", "Strict Top-5"], [
+        ["TFIDFCosine", "1.0000", "0.1667", "0.4417"],
+        ["OrderedStopFuzzy", "1.0000", "0.1583", "0.3750"],
+        ["DistanceAwareRouteRanker", "1.0000", "0.1583", "0.3833"],
+        ["LiveTransferSearch (SHIPPED)", "1.0000", "0.1917", "0.4000"],
+    ], widths=[2.2, 1.5, 1.3, 1.0])
+    callout(doc, "The coverage column is NOT an accuracy figure - this is the point to understand",
+            "_valid_routes_for_pair() builds the relevance set by reading stop_pair_to_segments[(A,B)] - "
+            "the SAME index _find_transfer_suggestions() uses to generate its candidates. So the coverage "
+            "metric asks \"did the search return a route from the index it searched?\", which is close to "
+            "tautological: it cannot fall meaningfully below 1.0 without an outright bug. It proves the "
+            "search never fails to find a valid route. It says nothing about whether that route is good. "
+            "This is why metrics.json sets headline_metric = rank_quality, and why verifier criteria 1.7 "
+            "and 1.8 fail the build if anyone sets the headline back to a coverage metric.", warn=True)
+    para(doc, "The metric with real discriminating power is rank quality: given that a valid bus was "
+              "returned, was it the BEST valid bus (fewest intermediate stops, then highest frequency)? "
+              "The ranker was not guaranteed to satisfy that criterion, and at baseline it did not.")
+    table(doc, ["Rank-quality metric (HEADLINE)", "Baseline", "After tuning", "Threshold"], [
+        ["best_option_rate", "0.5700", "0.7167", ">= 0.70"],
+        ["mean_percentile_rank (0 = best)", "0.1400", "0.0437", "<= 0.10"],
+        ["within_2_stops_rate", "0.9000", "0.9917", ">= 0.92"],
+        ["ndcg_at_5", "not recorded", "0.9810", "-"],
+        ["coverage (must not regress)", "1.0000", "1.0000", ">= 0.95"],
+        ["p90 search latency", "1.52 s", "1.19 s", "<= 1.6 s"],
+    ], widths=[2.4, 1.2, 1.3, 1.2])
+    para(doc, "Levers applied, each in isolation and kept only where the metric improved: stop span made "
+              "the primary ranking signal; a log1p(trip_count) frequency term; and a penalty for routes "
+              "whose span is far above the minimum for the pair. Under single-label strict match, "
+              "exact_route_match still reports top-1 0.1917 - retained so the change remains auditable.")
     evidence(doc, "backend/artifacts/metrics.json")
 
     h(doc, 2, "16.4 Why the shipped model is not the highest-scoring one on strict match")
@@ -77,13 +94,16 @@ def section_16(doc):
          "ordered stop-pair index encodes it."),
     ])
     callout(doc, "How to handle the accuracy question in a viva",
-            "Do not quote 20% top-1 as an achievement, and do not claim to have simply 'improved accuracy to 100%'. "
-            "Say: 'The original benchmark was single-label — it required naming the exact route the sample was drawn from, "
-            "on pairs where a median of 22 buses are all correct. I measured a theoretical ceiling of 0.16 for a perfect system "
-            "under that metric. I replaced it with relevance-set scoring, which showed that LiveTransferSearch returns a valid bus "
-            "in 100% of test searches on N=120 samples. With correctness validated, I added a rank-quality metric that measures "
-            "whether the best valid bus is ranked first — which was 57% at baseline, and through span weighting and frequency "
-            "tuning, reached 71.7% with a mean percentile rank of 0.044.' That demonstrates measurement engineering.", warn=True)
+            "Do NOT say \"I improved accuracy from 20% to 100%\". Changing a metric and reporting a "
+            "higher number is indistinguishable from moving the goalposts, and an examiner will say so. "
+            "Say instead: \"The original benchmark was single-label - it demanded the exact route each "
+            "sample was drawn from, on pairs where a median of 22 buses are all correct. I measured its "
+            "ceiling at 0.16, so it could not distinguish a good ranker from a bad one. Replacing it "
+            "showed the search always returns a valid route - but I report that as COVERAGE, not "
+            "accuracy, because the validity test reads the same index the search does, so it is close to "
+            "circular. The question that could actually be failed was whether the BEST valid route ranks "
+            "first. That was 57%. Weighting stop span and frequency took it to 72%.\" That answer shows "
+            "you found the limits of your own metric, which is worth more than any number.", warn=True)
 
     h(doc, 2, "16.5 The algorithm that actually serves users")
     code(doc,

@@ -1694,8 +1694,25 @@ class BMTCBusPredictor:
             "test_samples": sample_count,
             "live_test_samples": sample_count,
             "exact_route_match": strict_scores,
+            # Kept under its original name for continuity, but see
+            # `coverage_caveat` below: this is a CONSISTENCY check, not a
+            # quality measure, and it is deliberately NOT the headline.
             "relevance_set_metrics": model_scores["LiveTransferSearch"],
-            "headline_metric": "relevance_set_metrics",
+            "coverage_metrics": model_scores["LiveTransferSearch"],
+            "coverage_caveat": (
+                "relevance_set_metrics / coverage_metrics answer 'did the search return a route "
+                "that serves this stop pair in order?'. The relevance set is computed from "
+                "stop_pair_to_segments -- the SAME index the search uses to generate candidates -- "
+                "so a score near 1.0 is close to tautological and cannot fall much below it without "
+                "an outright bug. Treat this as COVERAGE (the search never fails to find a valid "
+                "route), not as accuracy. The metric with real discriminating power is rank_quality, "
+                "which scores against an independent criterion the ranker is not guaranteed to "
+                "satisfy -- and did not, at 0.57 before tuning."
+            ),
+            # The headline is rank_quality because it is the only metric here
+            # that the system can actually FAIL. A metric that cannot
+            # discriminate is not an accuracy metric.
+            "headline_metric": "rank_quality",
             "rank_quality": rank_quality,
         }
 
