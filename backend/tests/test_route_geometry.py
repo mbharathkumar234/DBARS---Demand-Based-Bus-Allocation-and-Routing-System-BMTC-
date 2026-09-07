@@ -58,9 +58,19 @@ def _hops(points: list[tuple[float, float]]) -> list[float]:
 def test_drawn_route_never_teleports(predictor, origin, destination):
     """No single hop between consecutive stops may be a cross-city jump.
 
-    Consecutive BMTC stops are a few hundred metres apart. A multi-kilometre
-    hop is a stop name resolved to the wrong side of the city, and it is what
-    the user sees as a random straight line.
+    Consecutive stops on an ordinary route are a few hundred metres apart, and
+    a multi-kilometre hop is a stop name resolved to the wrong side of the city
+    -- what the user sees as a random straight line.
+
+    Express services break the "few hundred metres" premise legitimately.
+    V-EXP 500D runs the Outer Ring Road with 11 stops and 34 trips a day; its
+    longest genuine hop is 7.2 km. A flat 5 km ceiling failed that route for
+    doing exactly what an express is meant to do, so the limit scales with the
+    journey instead: no hop may be a large fraction of the whole trip, and none
+    may be a cross-city distance in absolute terms. The 335-G bug this guards
+    against drew ~28 km hops on a 19.2 km journey and is still caught by both
+    halves. `test_drawn_length_agrees_with_stated_distance` below remains the
+    stronger invariant.
     """
     best = predictor.predict(origin, destination, 3)["best_match"]
     assert best is not None, f"{origin} -> {destination} became unroutable"
@@ -69,8 +79,11 @@ def test_drawn_route_never_teleports(predictor, origin, destination):
     assert len(points) >= 2
     hops = _hops(points)
     worst = max(hops)
-    assert worst <= 5.0, (
-        f"{origin} -> {destination} draws a {worst:.1f} km jump between consecutive stops"
+    stated = best["distance_km"] or 0.0
+    limit = min(12.0, max(5.0, 0.45 * stated))
+    assert worst <= limit, (
+        f"{origin} -> {destination} draws a {worst:.1f} km jump between consecutive "
+        f"stops (limit {limit:.1f} km for a {stated:.1f} km journey)"
     )
 
 

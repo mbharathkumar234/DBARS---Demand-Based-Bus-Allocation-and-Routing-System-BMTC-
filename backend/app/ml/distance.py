@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 import httpx
 
 from .text import fuzzy_ratio, normalize_text, repair_route_text
+from functools import lru_cache
 
 _COORD_PUNCT_RE = re.compile(r"[^a-z0-9\s]")
 _COORD_SPACE_RE = re.compile(r"\s+")
@@ -40,6 +41,7 @@ class StopRecord:
         return (self.lat, self.lon)
 
 
+@lru_cache(maxsize=100_000)
 def _minimal_normalize(value: str) -> str:
     """Lowercase/clean a stop name WITHOUT stripping distinguishing suffix
     words such as "layout", "circle", "station" -- used only for the

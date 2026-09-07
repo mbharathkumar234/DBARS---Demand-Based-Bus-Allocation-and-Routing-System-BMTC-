@@ -40,3 +40,20 @@ backend/artifacts/gtfs/
 .DS_Store
 Thumbs.db
 *.log
+
+# Throwaway debug scripts (AI layer development)
+backend/scratch/
+
+# Any .env variant (backups, per-env copies) -- never commit these
+.env.*
+!.env.example
+backend/.env.*
+!backend/.env.example
+
+# Built RAG indices (~6 MB of FAISS binaries plus a metadata file that is a
+# copy of the source already in this repo). Derived from the code, so they go
+# stale the moment it changes. Rebuild with:
+#   cd backend
+#   python -m app.ai.ingestion.pipeline
+#   python -m app.ai.ingestion.doc_pipeline
+backend/artifacts/ai_indices/

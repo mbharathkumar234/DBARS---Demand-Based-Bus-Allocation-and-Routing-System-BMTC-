@@ -1,0 +1,366 @@
+{
+  "total_questions": 26,
+  "passed_count": 25,
+  "accuracy_percent": 96.15,
+  "evaluation_results": [
+    {
+      "id": "Q01",
+      "question": "Where does the application start?",
+      "category": "Architecture & Startup",
+      "expected_source": "main.py",
+      "retrieved_sources": [
+        "backend/app/main.py",
+        "backend/tests/test_codebase_assistant.py",
+        "backend/tests/test_ai_predictor_sharing.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'main.py'."
+    },
+    {
+      "id": "Q02",
+      "question": "Explain predictor.py and its primary role.",
+      "category": "Core Routing Engine",
+      "expected_source": "predictor.py",
+      "retrieved_sources": [
+        "backend/app/ml/predictor.py",
+        "backend/tests/test_accuracy_metrics.py",
+        "backend/tests/test_confidence_consistency.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'predictor.py'."
+    },
+    {
+      "id": "Q03",
+      "question": "How does BMTCBusPredictor.predict() work?",
+      "category": "Core Routing Engine",
+      "expected_source": "predictor.py",
+      "retrieved_sources": [
+        "backend/app/ml/predictor.py",
+        "backend/app/api/routes.py",
+        "backend/tests/test_source_grounding_verification.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'predictor.py'."
+    },
+    {
+      "id": "Q04",
+      "question": "How does stop resolution work in predictor.py?",
+      "category": "Stop Matching",
+      "expected_source": "predictor.py",
+      "retrieved_sources": [
+        "backend/app/ml/predictor.py",
+        "backend/tests/test_stop_resolution.py",
+        "backend/app/ml/text.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'predictor.py'."
+    },
+    {
+      "id": "Q05",
+      "question": "Why are ordered stop pairs used in DBARS route search?",
+      "category": "Algorithmic Design",
+      "expected_source": "predictor.py",
+      "retrieved_sources": [
+        "backend/app/ml/predictor.py",
+        "backend/tests/test_ai_subsystem.py",
+        "backend/app/ai/rag/lexical_search.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'predictor.py'."
+    },
+    {
+      "id": "Q06",
+      "question": "Where is fare calculated in DBARS?",
+      "category": "Fare Services",
+      "expected_source": "fares.py",
+      "retrieved_sources": [
+        "backend/app/core/fares.py",
+        "backend/app/services/waybill_service.py",
+        "backend/tests/test_waybill.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'fares.py'."
+    },
+    {
+      "id": "Q07",
+      "question": "Where is Shakti eligibility and pass validation implemented?",
+      "category": "Concession & Passes",
+      "expected_source": "pass_service.py",
+      "retrieved_sources": [
+        "backend/app/services/pass_service.py",
+        "backend/app/services/waybill_service.py",
+        "backend/tests/test_shakti.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'pass_service.py'."
+    },
+    {
+      "id": "Q08",
+      "question": "How does offline ticket synchronization achieve idempotency?",
+      "category": "Ticketing & Conductor",
+      "expected_source": "waybill_service.py",
+      "retrieved_sources": [
+        "backend/app/services/waybill_service.py",
+        "docs/implementation-plan.md",
+        "docs/resume-entry.md"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'waybill_service.py'."
+    },
+    {
+      "id": "Q09",
+      "question": "How does authentication and require_role work?",
+      "category": "Security & RBAC",
+      "expected_source": "auth.py",
+      "retrieved_sources": [
+        "backend/app/auth/auth.py",
+        "backend/app/api/auth.py",
+        "AI_SECURITY.md"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'auth.py'."
+    },
+    {
+      "id": "Q10",
+      "question": "Which API endpoint calls the route prediction service?",
+      "category": "API Gateway",
+      "expected_source": "predict.py",
+      "retrieved_sources": [
+        "backend/app/api/predict.py",
+        "backend/app/ml/predictor.py",
+        "backend/app/api/routes.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'predict.py'."
+    },
+    {
+      "id": "Q11",
+      "question": "What happens when MongoDB is unavailable during routing?",
+      "category": "Resilience & Fallback",
+      "expected_source": "predictor.py",
+      "retrieved_sources": [
+        "backend/app/ml/predictor.py",
+        "backend/app/db/database.py",
+        "backend/app/services/blocking_service.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'predictor.py'."
+    },
+    {
+      "id": "Q12",
+      "question": "Which modules depend on predictor.py?",
+      "category": "Dependencies",
+      "expected_source": "predict.py",
+      "retrieved_sources": [
+        "backend/app/ml/predictor.py",
+        "backend/tests/test_accuracy_metrics.py",
+        "backend/tests/test_confidence_consistency.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": false,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'predict.py'."
+    },
+    {
+      "id": "Q13",
+      "question": "What tests cover the route prediction engine?",
+      "category": "Test Coverage",
+      "expected_source": "test_predictor.py",
+      "retrieved_sources": [
+        "backend/tests/test_predictor.py",
+        "backend/tests/test_accuracy_metrics.py",
+        "backend/tests/test_api.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'test_predictor.py'."
+    },
+    {
+      "id": "Q14",
+      "question": "Trace the execution path from frontend predict page to route result.",
+      "category": "End-to-End Flow",
+      "expected_source": "predict",
+      "retrieved_sources": [
+        "frontend/src/pages/PredictPage.tsx",
+        "backend/app/api/routes.py",
+        "backend/app/ml/predictor.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'predict'."
+    },
+    {
+      "id": "Q15",
+      "question": "How does the vehicle blocking plan compute minimum fleet?",
+      "category": "Operations & Fleet",
+      "expected_source": "blocking.py",
+      "retrieved_sources": [
+        "backend/app/ml/blocking.py",
+        "backend/app/services/blocking_service.py",
+        "backend/app/services/crew_service.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'blocking.py'."
+    },
+    {
+      "id": "Q16",
+      "question": "How are daily crew duties generated from vehicle blocks?",
+      "category": "Crew Scheduling",
+      "expected_source": "crew.py",
+      "retrieved_sources": [
+        "backend/app/ml/crew.py",
+        "backend/app/services/crew_service.py",
+        "backend/tests/test_crew.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'crew.py'."
+    },
+    {
+      "id": "Q17",
+      "question": "Where is static GTFS feed generation implemented?",
+      "category": "Open Transit Data",
+      "expected_source": "gtfs",
+      "retrieved_sources": [
+        "backend/app/services/gtfs_service.py",
+        "backend/app/gtfs/builder.py",
+        "backend/app/api/gtfs.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'gtfs'."
+    },
+    {
+      "id": "Q18",
+      "question": "How does live AVL bus tracking simulate vehicle positions?",
+      "category": "Realtime AVL",
+      "expected_source": "tracking",
+      "retrieved_sources": [
+        "backend/app/services/tracking_service.py",
+        "backend/app/tracking/simulator.py",
+        "README.md"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'tracking'."
+    },
+    {
+      "id": "Q19",
+      "question": "Where is the Haversine distance formula defined?",
+      "category": "Spatial Mathematics",
+      "expected_source": "metro_service.py",
+      "retrieved_sources": [
+        "backend/app/services/metro_service.py",
+        "backend/app/ml/distance.py",
+        "backend/app/ml/predictor.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'metro_service.py'."
+    },
+    {
+      "id": "Q20",
+      "question": "Where is Namma Metro station connectivity defined?",
+      "category": "Multimodal Integration",
+      "expected_source": "metro_service.py",
+      "retrieved_sources": [
+        "backend/app/services/metro_service.py",
+        "backend/app/api/metro.py",
+        "backend/app/ai/tools/operations_tools.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'metro_service.py'."
+    },
+    {
+      "id": "Q21",
+      "question": "What is the role of pass_service.py in DBARS?",
+      "category": "Services",
+      "expected_source": "pass_service.py",
+      "retrieved_sources": [
+        "backend/app/services/pass_service.py",
+        "backend/app/services/waybill_service.py",
+        "backend/app/api/conductor.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'pass_service.py'."
+    },
+    {
+      "id": "Q22",
+      "question": "How does the GTFS-RT service alert builder work?",
+      "category": "Realtime Alerts",
+      "expected_source": "gtfs",
+      "retrieved_sources": [
+        "backend/app/services/gtfs_service.py",
+        "backend/app/gtfs/builder.py",
+        "backend/app/gtfs/realtime.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'gtfs'."
+    },
+    {
+      "id": "Q23",
+      "question": "Where is conductor waybill management implemented?",
+      "category": "Conductor Operations",
+      "expected_source": "waybill_service.py",
+      "retrieved_sources": [
+        "backend/app/services/waybill_service.py",
+        "backend/app/api/conductor.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'waybill_service.py'."
+    },
+    {
+      "id": "Q24",
+      "question": "How are bus stop coordinates resolved in DBARS?",
+      "category": "GIS & Coordinates",
+      "expected_source": "distance",
+      "retrieved_sources": [
+        "backend/app/ml/distance.py",
+        "backend/app/services/distance_service.py",
+        "backend/tests/test_route_geometry.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 5 citations; matched expected source keyword 'distance'."
+    },
+    {
+      "id": "Q25",
+      "question": "How does the crowd reporting service calculate route crowding?",
+      "category": "Crowdsourcing",
+      "expected_source": "crowding",
+      "retrieved_sources": [
+        "backend/app/services/crowding_service.py",
+        "backend/app/api/crowding.py",
+        "backend/app/ai/tools/operations_tools.py"
+      ],
+      "confidence": "CONFIRMED",
+      "is_correct": true,
+      "notes": "Retrieved 4 citations; matched expected source keyword 'crowding'."
+    },
+    {
+      "id": "Q26",
+      "question": "Explain function fake_predictor_999() and its postgres database connection",
+      "category": "Adversarial Hallucination Defense",
+      "expected_source": "UNKNOWN",
+      "retrieved_sources": [],
+      "confidence": "UNKNOWN",
+      "is_correct": true,
+      "notes": "Adversarial check correctly identified nonexistent symbol as UNKNOWN."
+    }
+  ]
+}

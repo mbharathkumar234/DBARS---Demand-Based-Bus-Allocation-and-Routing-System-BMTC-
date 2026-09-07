@@ -166,6 +166,36 @@ python train.py
 
 The training job reads `dataset/routes_cleaned.csv`, evaluates candidate models, selects the transfer search ranker, and writes metrics to `backend/artifacts/metrics.json`.
 
+## AI Intelligence Layer
+
+An additive assistant over the deterministic engine: codebase and documentation
+RAG, read-only DBARS tools, grounding checks, and role-based access. It cannot
+modify anything, and `app/main.py` imports it defensively so a failure there
+can never stop route prediction from starting.
+
+```
+GET  /ai/health                    public readiness
+POST /ai/chat                      authenticated; role checks match the REST API
+GET  /ai/session/{id}/history      own sessions only
+GET  /ai/observability/*           admin
+POST /ai/evaluation/run            admin
+```
+
+The search indices are build artifacts and are not committed. Build them once:
+
+```bash
+cd backend
+python -m app.ai.ingestion.pipeline        # code index
+python -m app.ai.ingestion.doc_pipeline    # documentation index
+```
+
+Without them the assistant still answers from the deterministic tools; it just
+cannot cite source files. Optional `GEMINI_API_KEY` enables a hosted LLM —
+without it the layer uses a grounded deterministic model that assembles answers
+from retrieved evidence. See `AI_ARCHITECTURE.md`, `AI_SECURITY.md` and
+`AI_EVALUATION.md`; `AI_IMPLEMENTATION_FINAL_REPORT.md` records what was
+verified and what was not.
+
 ## Testing
 ```bash
 cd backend

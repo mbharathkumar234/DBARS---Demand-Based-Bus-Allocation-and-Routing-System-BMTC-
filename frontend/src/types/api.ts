@@ -17,6 +17,19 @@ export type MetroStation = {
   distance_meters?: number;
   walking_minutes?: number;
   auto_minutes?: number;
+  // How to actually get there when it is too far to walk. Null when walking
+  // is the sensible answer, or when no bus route reaches the station.
+  bus_connection?: {
+    bus_chain: string;
+    transfers: number;
+    board_stop: string;
+    alight_stop: string;
+    distance_km?: number | null;
+    duration_minutes?: number | null;
+    total_stops?: number | null;
+    final_walk_km: number;
+    final_walk_minutes: number;
+  } | null;
 };
 
 export type MetroInterchange = {
@@ -96,6 +109,9 @@ export type TransferSuggestion = {
   transfer_stops: string[];
   summary: string;
   legs: TransferLeg[];
+  // Riding time plus a flat allowance per change; see
+  // TRANSFER_PENALTY_MINUTES in predictor.py.
+  duration_minutes?: number | null;
 };
 
 export type TransferStep = {
@@ -122,6 +138,14 @@ export type PredictionResponse = {
   };
   best_match: RoutePrediction | null;
   alternatives: TransferSuggestion[];
+  // Two readings of the same candidate set. They genuinely disagree: the
+  // journey with fewest changes is often the longer ride, and the shortest
+  // ride often needs an extra bus. `least_distance` may contain 2-transfer
+  // journeys the fewest-changes view will never show.
+  views?: {
+    fewest_transfers: TransferSuggestion[];
+    least_distance: TransferSuggestion[];
+  };
   destination_nearest_metro?: MetroStation | null;
   destination_nearest_metro_list?: MetroStation[];
   // Real, moderated disruption alerts affecting this journey's routes or

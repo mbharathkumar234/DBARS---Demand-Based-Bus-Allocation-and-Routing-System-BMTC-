@@ -15,6 +15,7 @@ import { api } from "../services/api";
 import { apiFetch } from "../lib/apiClient";
 import { RouteMap } from "../components/RouteMap";
 import type { PredictionResponse } from "../types/api";
+import { RouteViewTabs } from "../components/RouteViewTabs";
 
 function RouteStopsPanel({ routePath, fromStop, toStop, busNumber }: {
   routePath: string[];
@@ -601,6 +602,16 @@ export default function PredictPage() {
               )}
 
 
+
+              {/* Two readings of the same candidate set -- fewest changes vs
+                  shortest ride. They disagree often enough that showing only
+                  one hid the trade-off from the commuter. */}
+              {result.views && (
+                <RouteViewTabs
+                  fewestTransfers={result.views.fewest_transfers}
+                  leastDistance={result.views.least_distance}
+                />
+              )}
 
               {/* Alternative Route Steps */}
               {result.alternatives && result.alternatives.length > (result.best_match ? 1 : 0) && (

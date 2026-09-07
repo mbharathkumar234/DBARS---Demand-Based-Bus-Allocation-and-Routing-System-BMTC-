@@ -22,6 +22,18 @@ from app.api.conductor import (
 )
 from app.api.sms import router as sms_router
 from app.api.safety import router as safety_router
+# The AI layer is an optional add-on, so its import is guarded. It pulls in
+# langchain, faiss and sentence-transformers; if any of them is missing or
+# broken, DBARS must still start. The deterministic core -- route prediction,
+# ticketing, GTFS -- does not depend on this and must never be taken down by
+# it. Same principle as init_db() below, which also cannot raise.
+try:
+    from app.ai.api.routes import router as ai_router
+except Exception as _ai_import_error:  # pragma: no cover - depends on env
+    ai_router = None
+    _AI_IMPORT_ERROR = _ai_import_error
+else:
+    _AI_IMPORT_ERROR = None
 from app.auth.routes import router as auth_router
 from app.core.config import settings
 from app.core.rate_limit import RateLimitMiddleware
@@ -52,6 +64,18 @@ async def lifespan(app: FastAPI):
     app.state.predictor.train()
     logger.info("Predictor is locked and loaded with %s routes", app.state.predictor.profile.get("rows", 0))
 
+    # Hand the trained predictor to the AI tool layer. Its accessor falls back
+    # to building its own if nobody injects one, and nobody did: the first chat
+    # request paid ~7s to train a second full copy and held ~900MB of duplicate
+    # index for the life of the process. Guarded like the router import, so an
+    # unavailable AI layer still cannot affect startup.
+    try:
+        from app.ai.tools import set_shared_predictor
+        set_shared_predictor(app.state.predictor)
+        logger.info("AI tool layer is sharing the trained predictor")
+    except Exception:
+        logger.debug("AI layer unavailable; skipping predictor injection")
+
     # Warm the vehicle-blocking plan in the background. It takes ~25s to
     # compute, and whoever opens the depot dashboard first would otherwise sit
     # watching a spinner for that long. Fire-and-forget rather than awaited, so
@@ -69,6 +93,23 @@ async def lifespan(app: FastAPI):
             )
         except Exception:
             logger.exception("Could not precompute the blocking plan; it will be built on first request")
+
+        # Crew duties, warmed in the same task so it runs after the blocking
+        # context exists and reuses it rather than rebuilding it. Asking the
+        # copilot "what is the crew-to-bus ratio?" on a cold process otherwise
+        # paid ~5.6s to rebuild the context plus ~7.6s to schedule the crew --
+        # the 10-15s wait a user reported. Failure here is logged and ignored,
+        # exactly like the blocking plan above.
+        try:
+            from app.services.crew_service import crew_plan_service
+            crew = await crew_plan_service.get_plan()
+            logger.info(
+                "Crew plan ready: %s duties at a crew-to-bus ratio of %s",
+                crew["network"].get("duties"),
+                crew["network"].get("crew_to_bus_ratio"),
+            )
+        except Exception:
+            logger.exception("Could not precompute the crew plan; it will be built on first request")
 
     # Held in app.state, not a local: asyncio keeps only a weak reference to
     # running tasks, so a task with no strong reference can be garbage
@@ -159,6 +200,13 @@ def create_app() -> FastAPI:
     app.include_router(conductor_router)
     app.include_router(conductor_depot_router)
     app.include_router(conductor_office_router)
+    if ai_router is not None:
+        app.include_router(ai_router)
+    else:
+        logger.warning(
+            "AI Intelligence Layer disabled: %s. Route prediction and all "
+            "deterministic features are unaffected.", _AI_IMPORT_ERROR,
+        )
 
     return app
 

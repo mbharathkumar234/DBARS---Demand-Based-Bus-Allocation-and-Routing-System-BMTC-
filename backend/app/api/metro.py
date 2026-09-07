@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
@@ -48,6 +49,17 @@ async def get_nearest_metro_stations(
         limit=limit,
         distance_service=distance_service,
     )
+
+    # "40 min walk" is a distance restated in minutes, not advice. Attach the
+    # bus that actually reaches each station, for the closest couple.
+    #
+    # In a worker thread because this calls predict(), which is CPU-bound and
+    # takes a second or two -- running it inline would stall every other
+    # request on the event loop for that long.
+    if stop_name and predictor is not None:
+        from app.services.metro_bus_link import attach_bus_connections
+
+        nearest = await asyncio.to_thread(attach_bus_connections, nearest, stop_name, predictor)
 
     return {
         "status": "ok",

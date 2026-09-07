@@ -23,3 +23,22 @@ openpyxl>=3.1.0
 # GTFS-realtime protobuf definitions (google.transit.gtfs_realtime_pb2), used
 # to publish the service-alert feed in app/gtfs/realtime.py. Pulls in protobuf.
 gtfs-realtime-bindings==2.2.0
+
+# ── AI Intelligence Layer ────────────────────────────────────────────────────
+# These were missing while app/ai/ imported them, so `pip install -r
+# requirements.txt` produced a backend that could not start AT ALL: main.py
+# imports the AI router at module scope, and the first missing package took
+# route prediction, ticketing and GTFS down with it. Declared here, and the
+# import in main.py is now guarded so a broken AI layer degrades to "no AI"
+# instead of "no DBARS".
+langchain==0.3.14
+langchain-core==0.3.29
+langchain-community==0.3.14
+langchain-text-splitters==0.3.5
+# Vector index for the code and documentation RAG stores.
+faiss-cpu==1.14.3
+# Local embedding model (all-MiniLM-L6-v2). Runs offline; no API key needed.
+sentence-transformers==5.5.1
+# Optional hosted LLM. Without GEMINI_API_KEY the layer falls back to the
+# deterministic grounded model in app/ai/llm/client.py.
+google-generativeai==0.8.6

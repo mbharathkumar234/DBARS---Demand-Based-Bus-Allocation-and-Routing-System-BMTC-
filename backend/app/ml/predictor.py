@@ -6,6 +6,7 @@ import math
 import random
 import re
 import time
+from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
 from statistics import mean
@@ -21,6 +22,31 @@ from app.services.metro_service import metro_service
 logger = logging.getLogger("bmtc.predictor")
 from .tfidf import TfidfIndex
 
+
+# How much longer than the shortest available journey a route may be before it
+# drops a length band and loses its trunk-corridor advantage. 0.20 means a
+# trunk route is preferred while it stays within 20% of the shortest chain's
+# stop span, which keeps the reliability preference for genuinely comparable
+# journeys without letting it justify a materially longer ride.
+SPAN_BAND_FRACTION = 0.20
+
+# How much longer than the shortest journey of the same transfer count a
+# candidate may be before it is demoted below it. Applied after legs are built,
+# where real distances are known, to correct for stop count being an imperfect
+# stand-in for length.
+LONG_WAY_ROUND_RATIO = 1.6
+
+# Below this many stops, a one-transfer journey is already short enough that a
+# third bus is very unlikely to beat it, and the deeper search is skipped. Set
+# from the observed split: the pairs that need three buses are cross-city or
+# cross-arc journeys running well past 20 stops on one interchange.
+TWO_TRANSFER_STOP_THRESHOLD = 20
+
+# Waiting for the next bus at an interchange. A flat allowance rather than a
+# per-route headway estimate, because the dataset gives trip counts but no
+# reliable published frequency per time band -- so this is an assumption, and
+# is labelled as one wherever the number is shown.
+TRANSFER_PENALTY_MINUTES = 8.0
 
 GENERIC_STOP_TOKENS = {
     "arrival",
@@ -201,6 +227,25 @@ class BMTCBusPredictor:
 
         self._normalized_stop_names = {stop: normalize_text(stop) for stop in self.stop_names}
 
+        # How many distinct stop names each distinctive word appears in --
+        # "dasarahalli" in 13, "vajarahalli" in 4 -- with generic words like
+        # "metro", "station" and "road" excluded. _resolve_stop_name uses this
+        # to tell "the commuter named a real place" from "the commuter made a
+        # typo", which character similarity alone cannot do: "dasarahalli" vs
+        # "vajarahalli" scores 0.82 while the genuine typo "majestc" vs
+        # "majestic" scores 0.93, so no ratio threshold separates them.
+        #
+        # The counts matter as much as the membership, because the dataset
+        # contains its own misspellings. "KSRTC-BANASHANKRI BUS STAND" makes
+        # "banashankri" a real token, but it appears once against 18 for
+        # "banashankari" -- so the rare spelling is treated as referring to the
+        # common one, while a common word like "jalahalli" (15) is never
+        # absorbed by a rare lookalike like "alahalli" (1).
+        token_counts: Counter[str] = Counter()
+        for normalized in self._normalized_stop_names.values():
+            token_counts.update(self._significant_tokens(normalized))
+        self._place_token_counts = token_counts
+
         grouped: dict[str, list[str]] = {}
         for stop, normalized in self._normalized_stop_names.items():
             grouped.setdefault(normalized, []).append(stop)
@@ -284,7 +329,30 @@ class BMTCBusPredictor:
             raise ValueError("You are already at your destination!")
 
         suggestions = self._find_transfer_suggestions(current_stop, destination, limit)
-        
+
+        # A third bus is only worth looking for when one interchange has not
+        # already produced a short journey. Sapthagiri College -> Reva College
+        # is the case that needs it: both are in north Bengaluru, but no single
+        # interchange links them along the northern arc, so the one-transfer
+        # answer comes down into the city and back out. Gating on the result
+        # keeps the ~280ms search off the great majority of queries, which are
+        # already answered directly or in one transfer.
+        two_transfer = []
+        shortest_so_far = min((s.get("total_stops") or 999) for s in suggestions) if suggestions else 999
+        needs_deeper = (
+            not any(s.get("transfers") == 0 for s in suggestions)
+            and shortest_so_far > TWO_TRANSFER_STOP_THRESHOLD
+        )
+        if needs_deeper:
+            for _t, _hops, path_tuples in self._find_two_transfer_paths(
+                normalize_text(start_stop), normalize_text(end_stop), limit=8
+            ):
+                try:
+                    legs = [self._make_transfer_leg(r, a, b) for r, a, b in path_tuples]
+                    two_transfer.append(self._make_transfer_suggestion(legs))
+                except Exception:
+                    continue
+
         best_match = None
         message = "No valid route found connecting these locations."
         steps = []
@@ -404,10 +472,35 @@ class BMTCBusPredictor:
                 leg["from_stop_id"] = self.stop_registry.id_for(leg["from_stop"])
                 leg["to_stop_id"] = self.stop_registry.id_for(leg["to_stop"])
 
+        # Two ways to read the same candidate set, because they genuinely
+        # disagree: the fewest-changes journey is often the longer ride, and
+        # the shortest ride often needs an extra bus. Presenting only one hid
+        # that trade-off from the commuter.
+        all_options = list(suggestions) + list(two_transfer)
+
+        def _distance_of(item: dict) -> float:
+            return float(item.get("total_distance_km") or 9999)
+
+        def _duration_of(item: dict) -> float:
+            return float(item.get("duration_minutes") or 9999)
+
+        fewest_transfers = sorted(
+            all_options,
+            key=lambda s: (s.get("transfers") or 0, s.get("total_stops") or 999, -(s.get("confidence") or 0)),
+        )
+        least_distance = sorted(
+            all_options,
+            key=lambda s: (_distance_of(s), _duration_of(s), s.get("transfers") or 0),
+        )
+
         return {
             "query": {"current_stop": current_stop, "destination": destination},
             "best_match": best_match,
             "alternatives": suggestions,
+            "views": {
+                "fewest_transfers": fewest_transfers[:limit],
+                "least_distance": least_distance[:limit],
+            },
             "steps": steps,
             "message": message,
             "model": {
@@ -973,6 +1066,24 @@ class BMTCBusPredictor:
                 and self._compact_raw(last_route.stops[last_idx]) == end_compact
             ):
                 return 0
+            # The raw names differ but normalise to the same key, and that
+            # covers two very different situations. "Yeshawanthapura Circle"
+            # and "Yeshawanthapura Bus Station" are genuinely separate places.
+            # "Kengeri" and "Kengeri Bus Station" are 0.2 km apart -- the same
+            # place under another name.
+            #
+            # Only distance separates them, and exactness is the FIRST element
+            # of the rank tuple, so treating a co-located stop as inexact is
+            # expensive: White Field Post Office -> Kengeri was answered with
+            # an 86-stop, 85.9 km journey (2.9x the straight line) because the
+            # 33-stop, 41.4 km alternative alighted at "Kengeri Bus Station".
+            # Same threshold as an interchange: if a commuter could walk it,
+            # it is the stop they asked for.
+            if (
+                self._same_named_place(first_route, first_idx, start_stop)
+                and self._same_named_place(last_route, last_idx, end_stop)
+            ):
+                return 0
             return 1
 
         optimal_paths = []
@@ -1074,6 +1185,19 @@ class BMTCBusPredictor:
         if pair_segments:
             _min_span_for_pair = min(e - s for _, s, e in pair_segments)
 
+        # The shortest span among the candidates actually being ranked, filled
+        # in just before the sort below.
+        #
+        # _min_span_for_pair above only exists when a DIRECT route serves the
+        # pair, so on a transfer-only journey it stays None and span_excess is
+        # always 0 -- leaving trunk_tier to decide the winner unopposed. That
+        # is how Reva College -> Sapthagiri College came back as a 53-stop,
+        # 42.35 km journey transferring in central Bengaluru, when a 41-stop,
+        # 33.43 km chain was sitting in the same candidate list: the longer one
+        # used route 253, which matches the trunk prefix list, and the shorter
+        # one did not. This reference works for every pair, direct or not.
+        _min_candidate_span: int | None = None
+
         def route_rank_score(item):
             path_tuples = item[3]
             transfers = item[0]
@@ -1115,10 +1239,22 @@ class BMTCBusPredictor:
             # For transfer routes (transfers > 0), prefer reliable trunk corridors first.
             trunk_tier = (0 if is_trunk else 1) if transfers > 0 else 0
 
+            # Which 20%-of-shortest band this chain's length falls into.
+            # Trunk preference is ranked inside a band rather than above
+            # length, so a trunk route still wins among journeys of comparable
+            # length -- which is what it was added for -- but can no longer win
+            # by being on a trunk corridor while riding materially further.
+            if _min_candidate_span:
+                over = max(0, total_stops - _min_candidate_span)
+                span_band = int(over / max(1.0, _min_candidate_span * SPAN_BAND_FRACTION))
+            else:
+                span_band = 0
+
             return (
                 stop_exactness(path_tuples),
                 transfers,
                 1 if (is_special or is_self_loop) else 0,
+                span_band,                # length band comes before trunk status
                 trunk_tier,
                 total_stops,              # 3.1: span is primary quality signal
                 span_excess,              # 3.3: penalise far-above-minimum
@@ -1159,6 +1295,24 @@ class BMTCBusPredictor:
         # Sort: journeys that actually serve the requested stops first, then
         # 0-transfer first, regular non-special commuter routes first, major
         # trunk series first, highest trip frequency first
+        # Set before sorting: route_rank_score closes over this and reads it at
+        # comparison time, so every candidate is banded against the same
+        # shortest-available journey.
+        #
+        # The reference has to be a journey a passenger could actually make.
+        # A plain min() over the candidates picks up name-collision chains --
+        # this pair produced a 6-stop "route" transferring at Dwaraka Nagara,
+        # which is two different places 14 km apart -- and banding against a
+        # fantasy 6-stop journey makes every band about one stop wide, which
+        # would quietly demote trunk preference to a tie-break everywhere.
+        # Scanning shortest-first and stopping at the first walkable candidate
+        # costs a handful of the same cheap geometric checks the shortlist loop
+        # below runs anyway.
+        for _candidate in sorted(pruned_paths, key=lambda item: item[1]):
+            if self._interchange_is_walkable(_candidate[3]):
+                _min_candidate_span = _candidate[1]
+                break
+
         pruned_paths.sort(key=route_rank_score)
 
         # Walk the ranked candidates and keep the ones whose interchanges are
@@ -1182,7 +1336,14 @@ class BMTCBusPredictor:
             if not self._interchange_is_walkable(path_tuples):
                 continue
             path = [self._make_transfer_leg(r, c, n) for r, c, n in path_tuples]
-            suggestions.append(self._make_transfer_suggestion(path))
+            built = self._make_transfer_suggestion(path)
+            # Stashed for _score_confidence below, which needs the same signals
+            # the ranker used. Stripped again before the suggestion is returned.
+            built["_exactness"] = stop_exactness(path_tuples)
+            built["_special"] = 1 if any(
+                is_special_route(r) or r.is_self_loop for r, _, _ in path_tuples
+            ) else 0
+            suggestions.append(built)
 
         # Final deduplicate by dedupe_key and trim to limit
         cleaned = []
@@ -1196,7 +1357,101 @@ class BMTCBusPredictor:
             cleaned.append(suggestion)
             if len(cleaned) >= limit:
                 break
-        return cleaned
+
+        return self._score_confidence(self._demote_long_way_round(cleaned))
+
+    def _score_confidence(self, suggestions: list[dict]) -> list[dict]:
+        """Recompute the displayed confidence so it agrees with the ranking.
+
+        These were two unrelated formulas. Ranking used exactness, transfers,
+        frequency tier, relative length and trunk status; confidence used only
+        transfers, stop count and frequency. So the number shown beside the
+        recommendation could be lower than the number beside an option below
+        it -- measured at 29.8% of multi-option results, up to 6.5 points.
+
+        Two changes. The score now includes the signals the ranker actually
+        used, weighted in the ranker's order of priority. And the sequence is
+        then forced to be non-increasing down the list, so whatever the
+        arithmetic says, the display can never contradict the ordering. The
+        clamp is the guarantee; the reweighting is what keeps it from doing
+        much work.
+        """
+        if not suggestions:
+            return suggestions
+
+        distances = [s.get("total_distance_km") for s in suggestions if s.get("total_distance_km")]
+        shortest = min(distances) if distances else None
+        spans = [s.get("total_stops") for s in suggestions if s.get("total_stops")]
+        fewest_stops = min(spans) if spans else None
+
+        ceiling = 0.92
+        for item in suggestions:
+            legs = item.get("legs") or []
+            stops = item.get("total_stops") or 0
+            freq = sum(math.log1p(leg.get("trip_count") or 0) for leg in legs) / max(len(legs), 1)
+            km = item.get("total_distance_km")
+            excess = 0.0
+            if km and shortest and shortest > 0:
+                excess = clamp(km / shortest - 1.0, 0.0, 1.0)
+            # The ranker's primary length signal is span in STOPS, not
+            # kilometres, so the score has to weigh the same thing to agree
+            # with it. Measured over 114 multi-option pairs, weighting stop
+            # excess at 0.25 and distance excess at 0.05 raised the share of
+            # results the formula orders correctly on its own from 65% to 76%.
+            stop_excess = 0.0
+            if stops and fewest_stops:
+                stop_excess = clamp(stops / fewest_stops - 1.0, 0.0, 1.0)
+
+            score = (
+                0.96
+                - 0.14 * float(item.pop("_exactness", 0) or 0)   # boards where asked
+                - 0.08 * float(item.get("transfers") or 0)       # changes
+                - 0.10 * float(item.pop("_special", 0) or 0)     # rare/special service
+                - 0.25 * stop_excess                             # more stops than the best option
+                - 0.05 * excess                                  # and further in km
+                - 0.006 * stops                                  # absolute length
+                + 0.012 * freq                                   # frequency
+            )
+            score = clamp(score, 0.28, ceiling)
+            # Never above the option ranked before it.
+            score = min(score, ceiling)
+            ceiling = score
+            item["confidence"] = round(score * 100, 1)
+        return suggestions
+
+    def _demote_long_way_round(self, suggestions: list[dict]) -> list[dict]:
+        """Correct the one thing stop count cannot express: actual length.
+
+        Ranking runs before any leg is built, so it uses `total_stops` as the
+        length signal -- distance is not known yet, and computing it for every
+        candidate is what the shortlist exists to avoid. The proxy holds while
+        stop spacing is comparable and fails when it is not: Shivanapura ->
+        Avalahalli BDA Layout was answered with a 78-stop, 146.3 km journey
+        over an 85-stop, 62.5 km one, because 78 < 85 while 146 km is more
+        than twice as far.
+
+        Distances are known here, so a candidate that is far longer than the
+        shortest of its own transfer tier is moved below it. Ordering is
+        otherwise left exactly as ranked -- this only demotes, and only on
+        evidence the ranker could not see.
+        """
+        by_transfers: dict[int, float] = {}
+        for item in suggestions:
+            km = item.get("total_distance_km")
+            if not km:
+                continue
+            tier = item.get("transfers") or 0
+            if km < by_transfers.get(tier, float("inf")):
+                by_transfers[tier] = float(km)
+
+        def penalty(index_item) -> tuple:
+            index, item = index_item
+            km = item.get("total_distance_km")
+            shortest = by_transfers.get(item.get("transfers") or 0)
+            far = bool(km and shortest and km > shortest * LONG_WAY_ROUND_RATIO)
+            return (1 if far else 0, index)
+
+        return [item for _, item in sorted(enumerate(suggestions), key=penalty)]
 
     # Bus depot/yard staging points (internal BMTC operational entries, not
     # passenger destinations) are named "Depot-<number> <nearby place>" --
@@ -1215,6 +1470,50 @@ class BMTCBusPredictor:
     def _is_operational_depot_stop(self, stop_display_name: str) -> bool:
         return bool(self._DEPOT_PREFIX_RE.match(stop_display_name.strip()))
 
+    # Spelling variants of one place and names of two different places are not
+    # separable by character similarity alone, but they sit either side of a
+    # narrow gap: measured on real stop names, variants of one place score
+    # >= 0.889 ("yeshwanthpur"/"yeshawanthapura") while genuinely different
+    # places score <= 0.857 ("jalahalli"/"ganjalahalli"). 0.88 sits in that gap.
+    # The margin is thin, which is why frequency does the deciding below and
+    # this only proposes candidates.
+    _PLACE_TOKEN_VARIANT_RATIO = 0.88
+
+    def _anchor_place_tokens(self, query_tokens: set[str]) -> frozenset[str]:
+        """Which real place names a query's distinctive words refer to.
+
+        A word anchors if the network actually uses it. It also anchors on a
+        near-identical word that the network uses *more often*, which is how a
+        misspelling reaches the right place -- "banashankri" appears in one stop
+        name, "banashankari" in eighteen, so the rare spelling defers to the
+        common one. The frequency comparison is what keeps that one-way: a
+        common word like "jalahalli" (15 stops) is never absorbed by a rare
+        lookalike like "alahalli" (1).
+
+        Returns an empty set when nothing is recognised, which leaves plain
+        fuzzy matching in charge and typos handled as before.
+        """
+        counts = getattr(self, "_place_token_counts", None)
+        if not counts or not query_tokens:
+            return frozenset()
+
+        anchors: set[str] = set()
+        for token in query_tokens:
+            own_count = counts.get(token, 0)
+            if own_count:
+                anchors.add(token)
+            for candidate, candidate_count in counts.items():
+                # Only a better-attested spelling can stand in for this word,
+                # and only one of roughly the same length -- the length guard
+                # keeps this off an O(vocabulary) similarity comparison for the
+                # overwhelming majority of tokens.
+                if candidate_count <= own_count or abs(len(candidate) - len(token)) > 3:
+                    continue
+                if SequenceMatcher(None, token, candidate).ratio() >= self._PLACE_TOKEN_VARIANT_RATIO:
+                    anchors.add(candidate)
+                    anchors.add(token)
+        return frozenset(anchors)
+
     def _resolve_stop_name(self, query: str) -> tuple[str, float]:
         normalized = normalize_text(query)
         candidates = self.stop_displays_by_norm.get(normalized)
@@ -1225,6 +1524,19 @@ class BMTCBusPredictor:
         best_score = 0.0
         norm_map = getattr(self, "_normalized_stop_names", None)
         items = norm_map.items() if norm_map else [(s, normalize_text(s)) for s in self.stop_names]
+
+        # Distinctive words in the query, and of those, the ones naming a place
+        # that actually exists in the network. "dasarahalli metro station" has
+        # query_tokens {"dasarahalli"} and anchors on it: the commuter named a
+        # real place, so a candidate that is a *different* place must not win on
+        # generic overlap. Without this it resolved to "Vajarahalli Metro
+        # Station" (0.882) over "Dasarahalli" (0.860), because the shared
+        # "metro" and the common "-arahalli" ending outweighed the single letter
+        # that is the whole difference between two stations at opposite ends of
+        # the Green Line.
+        query_tokens = self._significant_tokens(normalized)
+        anchor_tokens = self._anchor_place_tokens(query_tokens)
+
         for stop, normalized_stop in items:
             if self._compact_text(normalized) == self._compact_text(normalized_stop):
                 score = 0.99
@@ -1232,12 +1544,37 @@ class BMTCBusPredictor:
                 score = 1.0 - (len(normalized_stop) - len(normalized)) / max(len(normalized_stop), 1) * 0.15
             else:
                 score = fuzzy_ratio(query, stop, left_norm=normalized, right_norm=normalized_stop)
+            # Penalties only ever lower a score, so a candidate that cannot
+            # already beat the incumbent cannot beat it afterwards either.
+            # Skipping them here keeps the token comparison below off the hot
+            # path for the overwhelming majority of the stop list.
+            if score <= best_score:
+                continue
             # Unless the commuter is explicitly searching for a depot, a
             # depot staging point should essentially never outrank a real
             # passenger stop just for being a shorter string -- it should
             # only win if nothing else is even a plausible match.
             if not query_means_depot and self._is_operational_depot_stop(stop):
                 score *= 0.5
+            # Both rules below are discounts, not exclusions -- same shape as
+            # the depot rule above -- so a penalised stop can still win when
+            # nothing else matches at all.
+            stop_tokens = self._significant_tokens(normalized_stop)
+            if query_tokens and not stop_tokens:
+                # The candidate's name is entirely generic filler. This dataset
+                # contains a stop called simply "Metro", which used to swallow
+                # "<place> metro station" queries -- "yeshwanthpur metro
+                # station" resolved to "Metro". Someone who names a place never
+                # means this, and the discount has to be severe rather than
+                # merely large: a one-word name scores highly against any query
+                # sharing that word, so a softer penalty still left "Metro"
+                # beating the real "Majestic" stop. A query that names no place
+                # at all has no query_tokens, so a genuine search for "metro"
+                # is unaffected.
+                score *= 0.25
+            elif anchor_tokens and anchor_tokens.isdisjoint(stop_tokens):
+                # Named a real place, and this candidate is a different one.
+                score *= 0.6
             if score > best_score:
                 best_value = stop
                 best_score = score
@@ -1266,10 +1603,15 @@ class BMTCBusPredictor:
         # "Whitefield (Kadugodi)" (tokenized as {"whitefield","kadugodi"}
         # under minimal normalization, with no alias expansion to split
         # "whitefield" into two words in the first place).
-        return {
-            t for t in _minimal_normalize(name).split()
-            if len(t) >= 2 and t not in self._GENERIC_METRO_TOKENS
-        }
+        cache = self.__dict__.setdefault("_metro_token_cache", {})
+        hit = cache.get(name)
+        if hit is None:
+            hit = {
+                t for t in _minimal_normalize(name).split()
+                if len(t) >= 2 and t not in self._GENERIC_METRO_TOKENS
+            }
+            cache[name] = hit
+        return hit
 
     def _detect_metro_interchange(self, route_path: list[str]) -> dict | None:
         """Check whether this route path passes a real Namma Metro station.
@@ -1299,12 +1641,22 @@ class BMTCBusPredictor:
         stations = metro_service.get_all_stations()
         if not stations:
             return None
+        # Tokenised once per process rather than once per stop of every leg
+        # built. This scan was 65% of a route search: 672 legs x ~40 stops x 85
+        # stations was reaching 621k token lookups per query.
+        station_tokens_by_name = self.__dict__.get("_metro_station_tokens")
+        if station_tokens_by_name is None:
+            station_tokens_by_name = [
+                (station, self._metro_match_tokens(station["station_name"]))
+                for station in stations
+            ]
+            self.__dict__["_metro_station_tokens"] = station_tokens_by_name
+
         for stop in route_path:
             stop_tokens = self._metro_match_tokens(stop)
             if not stop_tokens:
                 continue
-            for station in stations:
-                station_tokens = self._metro_match_tokens(station["station_name"])
+            for station, station_tokens in station_tokens_by_name:
                 if not station_tokens:
                     continue
                 if stop_tokens.issubset(station_tokens) or station_tokens.issubset(stop_tokens):
@@ -1390,6 +1742,26 @@ class BMTCBusPredictor:
     # different suburbs that happen to share a name.
     MAX_INTERCHANGE_WALK_KM = 1.2
 
+    def _same_named_place(self, route: RouteRecord, index: int, requested: str) -> bool:
+        """Is this route's stop the same physical place as the requested stop?
+
+        Used only where the two names already normalise to the same key, so
+        this is deciding "different wording" from "different place", not
+        matching arbitrary stops. Falls back to False when either point is
+        unknown -- an unlocatable stop should not be promoted to exact.
+        """
+        from .blocking import haversine_km
+
+        try:
+            points = self._route_points(route)
+            here = points[index] if index < len(points) else None
+            record = self.distance_service.resolve_stop_record(requested)
+        except Exception:
+            return False
+        if not here or not record or record.lat is None or record.lon is None:
+            return False
+        return haversine_km(here, (record.lat, record.lon)) <= self.MAX_INTERCHANGE_WALK_KM
+
     def _route_points(self, route: RouteRecord) -> list[tuple[float, float] | None]:
         """This route's stops as anchored points, cached per route-direction.
 
@@ -1409,6 +1781,112 @@ class BMTCBusPredictor:
             ]
             self._route_points_cache[key] = cached
         return cached
+
+    def _find_two_transfer_paths(
+        self, start_norm: str, end_norm: str, limit: int = 12
+    ) -> list[tuple]:
+        """Three-bus journeys, for pairs one interchange cannot connect well.
+
+        Sapthagiri College -> Reva College is the case this exists for. Both
+        are in north Bengaluru, but no single interchange links them along the
+        northern arc, so the one-transfer search can only reach Reva by coming
+        down into the city and back out -- a 32 km ride. Google Maps answers
+        the same pair with 248-BA -> 401-A -> 289-S in 1h52m, and every one of
+        those routes is in this dataset: 248-BA serves Sapthagiri, 289-S serves
+        Reva, and 401-A serves neither. It is purely a middle leg, so no
+        amount of one-transfer searching can find it.
+
+        Enumerating three legs exhaustively is not affordable -- the
+        one-transfer search alone reaches ~933k paths on a hub-to-hub query.
+        This instead meets in the middle: collect where the first bus can drop
+        you, collect where the last bus can pick you up, and look only at
+        routes touching both sets. Cost is linear in the routes involved rather
+        than combinatorial.
+        """
+        src_routes = self.stop_to_route_indices.get(start_norm, set())
+        dst_routes = self.stop_to_route_indices.get(end_norm, set())
+        if not src_routes or not dst_routes:
+            return []
+
+        # Where the first bus can put you, keeping the shortest ride to each.
+        first_leg: dict[str, tuple[int, int, int, int]] = {}
+        for r1_idx in src_routes:
+            r1 = self.routes[r1_idx]
+            for board in r1.stop_positions.get(start_norm, ()):
+                for k in range(board + 1, len(r1.normalized_stops)):
+                    stop = r1.normalized_stops[k]
+                    if not stop or stop == end_norm or stop == start_norm:
+                        continue
+                    hops = k - board
+                    prev = first_leg.get(stop)
+                    if prev is None or hops < prev[3]:
+                        first_leg[stop] = (r1_idx, board, k, hops)
+
+        # Where the last bus can collect you from.
+        last_leg: dict[str, tuple[int, int, int, int]] = {}
+        for r3_idx in dst_routes:
+            r3 = self.routes[r3_idx]
+            for alight in r3.stop_positions.get(end_norm, ()):
+                for k in range(0, alight):
+                    stop = r3.normalized_stops[k]
+                    if not stop or stop == start_norm or stop == end_norm:
+                        continue
+                    hops = alight - k
+                    prev = last_leg.get(stop)
+                    if prev is None or hops < prev[3]:
+                        last_leg[stop] = (r3_idx, k, alight, hops)
+
+        if not first_leg or not last_leg:
+            return []
+
+        # Only routes that touch both halves can be the middle bus.
+        middle_ids: set[int] = set()
+        for stop in first_leg:
+            middle_ids |= self.stop_to_route_indices.get(stop, set())
+        tail_ids: set[int] = set()
+        for stop in last_leg:
+            tail_ids |= self.stop_to_route_indices.get(stop, set())
+        middle_ids &= tail_ids
+        middle_ids -= src_routes
+        middle_ids -= dst_routes
+
+        found: list[tuple] = []
+        for r2_idx in middle_ids:
+            r2 = self.routes[r2_idx]
+            stops2 = r2.normalized_stops
+            best_board: tuple[int, int] | None = None   # (index on r2, hops so far)
+            best_here: tuple[int, ...] | None = None
+            for j, stop in enumerate(stops2):
+                if best_board is not None and stop in last_leg:
+                    i, prefix_hops = best_board
+                    r3_idx, pick, alight, tail_hops = last_leg[stop]
+                    total = prefix_hops + (j - i) + tail_hops
+                    if best_here is None or total < best_here[0]:
+                        r1_idx, board, drop, _ = first_leg[stops2[i]]
+                        best_here = (
+                            total,
+                            (self.routes[r1_idx], board, drop),
+                            (r2, i, j),
+                            (self.routes[r3_idx], pick, alight),
+                        )
+                if stop in first_leg:
+                    hops = first_leg[stop][3]
+                    if best_board is None or hops < best_board[1]:
+                        best_board = (j, hops)
+            if best_here:
+                found.append(best_here)
+
+        found.sort(key=lambda item: item[0])
+
+        paths: list[tuple] = []
+        for entry in found:
+            tuples = [entry[1], entry[2], entry[3]]
+            if not self._interchange_is_walkable(tuples):
+                continue
+            paths.append((2, entry[0], tuples))
+            if len(paths) >= limit:
+                break
+        return paths
 
     def _interchange_is_walkable(self, path_tuples: list[tuple]) -> bool:
         """Reject a transfer whose two buses do not actually meet.
@@ -1503,6 +1981,15 @@ class BMTCBusPredictor:
         total_stops = sum(leg["stop_count"] for leg in legs)
         known_distances = [float(leg["distance_km"]) for leg in legs if leg.get("distance_km")]
         total_distance = sum(known_distances) if known_distances else None
+        # Riding time plus a flat allowance for each change. Carried on the
+        # suggestion, not just on best_match, so a journey can be ranked by how
+        # long it takes and not only by how far it goes -- a shorter ride with
+        # two changes is not always the quicker one.
+        known_durations = [float(leg["duration_minutes"]) for leg in legs if leg.get("duration_minutes")]
+        total_duration = (
+            sum(known_durations) + TRANSFER_PENALTY_MINUTES * (len(legs) - 1)
+            if known_durations else None
+        )
         frequency_score = sum(math.log1p(leg["trip_count"]) for leg in legs) / max(len(legs), 1)
         confidence = clamp(0.96 - 0.08 * (len(legs) - 1) - 0.006 * total_stops + 0.012 * frequency_score, 0.28, 0.92)
         transfer_stops = [leg["to_stop"] for leg in legs[:-1]]
@@ -1517,6 +2004,7 @@ class BMTCBusPredictor:
             "transfers": max(0, len(legs) - 1),
             "total_stops": total_stops,
             "total_distance_km": round(total_distance, 2) if total_distance is not None else None,
+            "duration_minutes": round(total_duration, 1) if total_duration is not None else None,
             "bus_chain": bus_chain,
             "transfer_stops": transfer_stops,
             "summary": "; then ".join(summary_parts) + ".",

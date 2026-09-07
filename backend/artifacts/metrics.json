@@ -56,7 +56,7 @@
     "live_test_samples": 120,
     "exact_route_match": {
       "accuracy_top_1": 0.1917,
-      "accuracy_top_3": 0.325,
+      "accuracy_top_3": 0.3167,
       "accuracy_top_5": 0.4
     },
     "relevance_set_metrics": {
@@ -81,11 +81,11 @@
       "best_option_rate": 0.7167,
       "mean_percentile_rank": 0.0437,
       "within_2_stops_rate": 0.9917,
-      "ndcg_at_5": 0.981,
+      "ndcg_at_5": 0.982,
       "sample_count": 120,
       "definition": "best = fewest intermediate stops, then highest trip_count, then shortest distance"
     },
-    "training_seconds": 6.947,
+    "training_seconds": 10.663,
     "dataset_profile": {
       "rows": 6737,
       "unique_bus_numbers": 3940,
@@ -124,5 +124,5 @@
     "max_stops_per_route": 95,
     "avg_stops_per_route": 30.29
   },
-  "trained_at": 1788531801.3023682
+  "trained_at": 1788761688.4133372
 }

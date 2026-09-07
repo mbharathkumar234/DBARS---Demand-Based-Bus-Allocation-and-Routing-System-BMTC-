@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MapPin, Navigation, Map, Footprints, Car, ArrowRight, Train, Sparkles, RefreshCw, Maximize2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { MapPin, Navigation, Map, Footprints, Bus, Car, ArrowRight, Train, Sparkles, RefreshCw, Maximize2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { AutocompleteInput } from "./AutocompleteInput";
 import { api } from "../services/api";
 import type { MetroStation } from "../types/api";
@@ -369,8 +369,35 @@ export function NearestMetroPanel({ initialStop = "Whitefield ACP Police Station
                       gap: "5px",
                     }}
                   >
-                    <Footprints size={13} style={{ color: "var(--brand)" }} /> {st.walking_minutes} min walk
+                    {st.bus_connection ? (
+                      <>
+                        <Bus size={13} style={{ color: "var(--brand)" }} />
+                        <span>
+                          <strong>{st.bus_connection.bus_chain}</strong>
+                          {st.bus_connection.duration_minutes != null && <> · {Math.round(st.bus_connection.duration_minutes)} min</>}
+                          {st.bus_connection.distance_km != null && <> · {st.bus_connection.distance_km} km</>}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Footprints size={13} style={{ color: "var(--brand)" }} /> {st.walking_minutes} min walk
+                      </>
+                    )}
                   </div>
+                  {st.bus_connection && (
+                    <div
+                      style={{
+                        flexBasis: "100%",
+                        fontSize: "0.76rem",
+                        color: "var(--muted)",
+                        marginTop: "2px",
+                      }}
+                    >
+                      Board at {st.bus_connection.board_stop}, get off at {st.bus_connection.alight_stop}
+                      {st.bus_connection.transfers > 0 && <> ({st.bus_connection.transfers} change{st.bus_connection.transfers > 1 ? "s" : ""})</>}
+                      , then {st.bus_connection.final_walk_minutes} min walk ({st.bus_connection.final_walk_km} km).
+                    </div>
+                  )}
 
                   <div
                     style={{
