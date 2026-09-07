@@ -52,8 +52,7 @@
       "expected_source": "predictor.py",
       "retrieved_sources": [
         "backend/app/ml/predictor.py",
-        "backend/tests/test_stop_resolution.py",
-        "backend/app/ml/text.py"
+        "backend/tests/test_stop_resolution.py"
       ],
       "confidence": "CONFIRMED",
       "is_correct": true,
@@ -108,8 +107,8 @@
       "expected_source": "waybill_service.py",
       "retrieved_sources": [
         "backend/app/services/waybill_service.py",
-        "docs/implementation-plan.md",
-        "docs/resume-entry.md"
+        "backend/app/api/conductor.py",
+        "backend/app/models/waybill.py"
       ],
       "confidence": "CONFIRMED",
       "is_correct": true,
@@ -123,7 +122,7 @@
       "retrieved_sources": [
         "backend/app/auth/auth.py",
         "backend/app/api/auth.py",
-        "AI_SECURITY.md"
+        "backend/tests/test_ai_subsystem.py"
       ],
       "confidence": "CONFIRMED",
       "is_correct": true,

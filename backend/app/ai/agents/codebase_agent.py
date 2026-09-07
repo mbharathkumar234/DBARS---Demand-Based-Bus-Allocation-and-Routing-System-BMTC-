@@ -709,13 +709,13 @@ class CodebaseAssistant:
         elif any(k in q for k in ["read-only", "protected files", "ai_protected_files", "deterministic core and the ai", "protection manifest"]):
             direct = (
                 "The DBARS AI Intelligence Layer enforces strict read-only access to the deterministic core as defined in "
-                "`AI_PROTECTED_FILES.md`. The AI layer cannot modify `predictor.py`, `blocking.py`, `crew.py`, or dataset CSVs; "
+                "the protected-files manifest (section 40 of the defense document). The AI layer cannot modify `predictor.py`, `blocking.py`, `crew.py`, or dataset CSVs; "
                 "it accesses the optimization system solely through read-only tools with zero modification permissions."
             )
-            files = ["AI_PROTECTED_FILES.md", "README.md", "backend/app/main.py"]
+            files = ["README.md", "backend/app/main.py"]
             syms = []
             flow = [
-                "AI guardrails inspect incoming queries against `AI_PROTECTED_FILES.md` manifest constraints.",
+                "AI guardrails inspect incoming queries against the protected-core manifest.",
                 "Read-only DBARS tools execute deterministic lookups without write operations.",
                 "Citations and claims are verified against ground-truth source trees.",
                 "All deterministic optimization calculations remain immutable and human-supervised.",
@@ -823,7 +823,7 @@ class CodebaseAssistant:
                 "management platform engineered for BMTC (Bangalore Metropolitan Transport Corporation). "
                 "Its core mission is optimizing bus allocation, scheduling, and commuter routing based on real passenger demand."
             )
-            files = ["README.md", "AI_PROTECTED_FILES.md"]
+            files = ["README.md"]
             syms = []
             flow = [
                 "Documented in `README.md` and repository architectural specifications.",
@@ -842,7 +842,7 @@ class CodebaseAssistant:
                 "Any modifications to routes or schedules must be reviewed and approved by human BMTC operators "
                 "and executed through deterministic core services."
             )
-            files = ["AI_PROTECTED_FILES.md", "README.md"]
+            files = ["README.md"]
             syms = []
             flow = [
                 "AI layer tools are restricted to read-only operations.",

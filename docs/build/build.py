@@ -19,6 +19,7 @@ MODULES = [
     ("s26_30", ["section_26", "section_27", "section_28", "section_29", "section_30"]),
     ("s31_35", ["section_31", "section_32", "section_33", "section_34", "section_35"]),
     ("s36_39", ["section_36", "section_37", "section_38", "section_39"]),
+    ("s40_42", ["section_40", "section_41", "section_42"]),
     ("appendix", ["appendices"]),
 ]
 

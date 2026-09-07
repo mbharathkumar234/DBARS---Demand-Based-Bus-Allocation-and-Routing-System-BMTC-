@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-07T06:09:32.752545+00:00",
+  "timestamp": "2026-09-07T06:45:48.554841+00:00",
   "total_questions": 2,
   "passed_questions": 2,
   "overall_accuracy": 1.0,
@@ -9,7 +9,7 @@
   "overall_hallucination_rate": 0.0,
   "overall_tool_correctness": 1.0,
   "overall_citation_precision": 1.0,
-  "avg_latency_ms": 109.01,
+  "avg_latency_ms": 151.96,
   "category_summaries": {
     "code_understanding": {
       "category": "code_understanding",
@@ -22,7 +22,7 @@
       "hallucination_rate": 0.0,
       "avg_tool_correctness": 1.0,
       "avg_citation_precision": 1.0,
-      "avg_latency_ms": 109.01
+      "avg_latency_ms": 151.96
     }
   },
   "results": [
@@ -31,7 +31,7 @@
       "category": "code_understanding",
       "question": "How does the ML passenger demand predictor work in predictor.py?",
       "answer": "### 1. Direct Answer\n`BMTCBusPredictor` in `backend/app/ml/predictor.py` is the core deterministic routing and demand prediction engine. Its `predict(current_stop, destination, limit)` method takes origin and destination stop names, resolves them to canonical names, retrieves candidate routes matching the ordered stop-pair, and ranks them using multi-factor scoring and passenger demand patterns.\n\n### 2. Relevant Source Files\n- `backend/app/ml/predictor.py`\n- `backend/tests/test_accuracy_metrics.py`\n- `backend/tests/test_confidence_consistency.py`\n- `backend/tests/test_route_geometry.py`\n- `backend/tests/test_stop_resolution.py`\n\n### 3. Relevant Functions / Classes\n- `BMTCBusPredictor`\n- `BMTCBusPredictor.predict`\n- `predictor`\n\n### 4. Execution Flow\n1. Commuter inputs origin stop and destination stop via `POST /predict`.\n2. `_resolve_stop_name()` uses inverted stop index and fuzzy matching to resolve canonical stop names.\n3. `stop_pair_to_segments` index retrieves candidate route segments that serve both stops in order.\n4. Multi-factor scoring evaluates stops count, travel duration, headway frequency, and transfer penalties.\n5. Direct routes are scored and ranked; if none are found, transfer search evaluates 1-transfer connections.\n6. Deterministic best match and top candidates are returned as structured JSON.\n\n### 5. Architectural Reasoning\nThe routing engine is 100% deterministic and independent of live databases or LLMs, ensuring strict sub-50ms predictability and mathematical reproducibility.\n\n### 6. Evidence & Source References\n[1] backend/app/ml/predictor.py [`BMTCBusPredictor`]\n[2] backend/tests/test_accuracy_metrics.py (lines 44–45) [`predictor`]\n[3] backend/tests/test_confidence_consistency.py (lines 40–43) [`predictor`]\n[4] backend/tests/test_route_geometry.py (lines 26–29) [`predictor`]\n[5] backend/tests/test_stop_resolution.py (lines 30–33) [`predictor`]\n\n### 7. Uncertainty & Limitations\n✅ Confirmed by authoritative DBARS source code.",
-      "latency_ms": 109.5,
+      "latency_ms": 53.92,
       "passed": true,
       "answer_correctness": 0.6,
       "retrieval_relevance": 1.0,
@@ -55,7 +55,7 @@
       "category": "code_understanding",
       "question": "What is the vehicle blocking algorithm implemented in blocking.py?",
       "answer": "### 1. Direct Answer\nVehicle blocking is implemented in `backend/app/ml/blocking.py` (`BlockingEngine`) and `backend/app/services/blocking_service.py`. In that module, the function and methods within `BlockingEngine` compute deadhead trips and travel times between trip arrivals and departures, solving the bipartite assignment to minimize required buses and deadhead kilometers.\n\n### 2. Relevant Source Files\n- `backend/app/ml/blocking.py`\n- `backend/app/services/blocking_service.py`\n\n### 3. Relevant Functions / Classes\n- `BlockingEngine`\n- `compute_plan`\n- `BlockingEngine.block_interlined`\n- `_depot_metrics`\n- `Block`\n\n### 4. Execution Flow\n1. Trips from revenue routes are collected across operational time windows.\n2. Departure and arrival events create time-space demand curves.\n3. Compatible pull-in and pull-out trips within maximum idle time (e.g. 15-45 mins) form a bipartite graph.\n4. Hungarian matching minimizes total deadhead kilometers and vehicle count.\n5. Output blocks are partitioned by depot to establish physical depot bus allocations.\n\n### 5. Architectural Reasoning\nDepot interlining releases idle buses between peak hours, saving BMTC millions of rupees in capital and fuel costs.\n\n### 6. Evidence & Source References\n[1] backend/app/ml/blocking.py (lines 771–785) [`BlockingEngine.block_interlined`]\n[2] backend/app/services/blocking_service.py (lines 176–197) [`_depot_metrics`]\n[3] backend/app/ml/blocking.py (lines 403–818) [`BlockingEngine`]\n[4] backend/app/ml/blocking.py (lines 178–209) [`Block`]\n\n### 7. Uncertainty & Limitations\n✅ Confirmed by authoritative DBARS source code.",
-      "latency_ms": 108.52,
+      "latency_ms": 249.99,
       "passed": true,
       "answer_correctness": 1.0,
       "retrieval_relevance": 1.0,

@@ -162,11 +162,12 @@ def build():
 
     # 9 AI
     h(doc, 1, "9. AI summary - read this twice")
-    callout(doc, "There is no AI in this project",
-            "No LLM, no neural network, no trained model file, no inference API. Some UI text says "
-            "\"AI\" and that wording is wrong. What exists: an inverted index plus an ordered "
-            "stop-pair index with a hand-weighted scoring function - classical information retrieval "
-            "and graph search - benchmarked against three baselines.", warn=True)
+    callout(doc, "There is no AI in the ROUTING ENGINE - keep the two apart",
+            "The thing that predicts buses has no LLM, no neural network, no trained model file and "
+            "no inference API. It is an inverted index plus an ordered stop-pair index with a "
+            "hand-weighted scoring function - classical information retrieval and graph search - "
+            "benchmarked against three baselines. A separate AI layer was added later (section 16). "
+            "Conflating them is what invites the question you cannot defend.", warn=True)
     para(doc, "The benchmark was single-label: it demanded the exact route each sample was drawn from, "
               "on pairs where a MEDIAN OF 22 buses are all correct. A perfect system picking uniformly "
               "among valid buses would have scored only 0.16. It was replaced with relevance-set "
@@ -361,8 +362,69 @@ def build():
          "and single-process only - scaling needs shared state moved to Redis."),
     ])
 
+    # 16 AI LAYER
+    page_break(doc)
+    h(doc, 1, "16. The AI layer - and how to describe it honestly")
+    para(doc, "Added after the routing engine and deliberately separate from it. Answers questions "
+              "about the codebase, the documentation and live transit state.", bold=True)
+    table(doc, ["Component", "What it is"], [
+        ["Retrieval", "AST-chunked code index + documentation index;\n"
+                      "BM25 fused with vectors by Reciprocal Rank Fusion"],
+        ["Tools", "8 read-only DBARS tools, role-gated at one chokepoint"],
+        ["Agents", "codebase / operations / travel, dispatched by intent"],
+        ["LLM", "Gemini when a key is set; a grounded deterministic\nmodel otherwise (the default)"],
+    ], widths=[1.4, 4.6])
+    callout(doc, "The sentence that keeps you honest",
+            "Only 1.8% of benchmark answers actually invoke the language model. The orchestrator is "
+            "an intent router into hand-written agents; the LLM is the fallback for queries no agent "
+            "claims. Swapping the offline model for live Gemini moved mean answer correctness from "
+            "0.8150 to 0.8146. It is retrieval and templating with an LLM available - calling it "
+            "LLM-powered would overstate it.", warn=True)
+    para(doc, "The 0% hallucination rate follows from that. Most answers are assembled from "
+              "retrieved evidence, so there is structurally nothing to hallucinate with. It is a "
+              "property of the architecture, not evidence that a generative model was tested and "
+              "found truthful.")
+
+    h(doc, 2, "16.1 Security - the strongest story here")
+    para(doc, "The layer shipped with NO authentication on any /ai/* endpoint and was a working "
+              "bypass of require_role(). GET /depot/blocking-plan returned 401 to an anonymous "
+              "caller while POST /ai/chat answered the same question with the depot fleet figures "
+              "and a 200. Every require_role occurrence in app/ai was a string in a prompt or a "
+              "regex, not an enforced check.", bold=True)
+    bullets(doc, [
+        "Identity now comes from the verified token, never the request body.",
+        "Tools are gated at ToolRegistry.execute_tool() - one chokepoint, fails closed.",
+        "Session memory is keyed user_id::session_id, closing an IDOR that leaked journeys.",
+        "Observability and evaluation endpoints are admin-only.",
+        "19 regression tests pin the 401-versus-200 pair.",
+    ])
+
+    h(doc, 2, "16.2 Defects it exposed in the routing engine")
+    table(doc, ["Symptom", "Root cause"], [
+        ["dasarahalli metro station returned\nVajarahalli - the far end of the line",
+         "Matching compared spelling, not place"],
+        ["Whitefield to Kengeri: 86 stops / 85.9 km\ninstead of 33 stops / 41.4 km",
+         "Kengeri Bus Station counted as inexact\ndespite being 0.22 km from Kengeri"],
+        ["78 stops / 146 km beat 85 stops / 62 km", "Stop count used as a proxy for distance"],
+        ["Sapthagiri to Reva went via the centre", "Search could not see past one interchange"],
+        ["29.8% of results scored the pick lower\nthan an alternative shown below it",
+         "Ranking and confidence were unrelated\nformulas"],
+        ["First depot question took 10-15 seconds", "Crew plan was never warmed at startup"],
+    ], widths=[3.1, 2.9])
+    para(doc, "430 tests pass. best_option_rate held at 0.7167 through every change and ndcg@5 "
+              "improved from 0.9810 to 0.9820. Say that the fixes were verified NOT to move the "
+              "headline metric - that is what makes them safe to claim.")
+
+    h(doc, 2, "16.3 What did not work - volunteer this")
+    para(doc, "Semantic embeddings (all-MiniLM-L6-v2) were the obvious upgrade to a lexical index. "
+              "Measured on identical content: 8/10 with query expansion either way, and 4/10 versus "
+              "5/10 without it - no improvement, for 80x the load time and 25x the memory. The model "
+              "is trained on sentences, not source code. Reverted to the deterministic provider. "
+              "Being able to say I tried it, measured it, and it did not help is worth more than any "
+              "claim that it did.", bold=True)
+
     callout(doc, "The three questions most likely to catch you out",
-            "1. \"Where is the AI?\" - There is none. Say so plainly and describe the retrieval system. "
+            "1. \"Where is the AI?\" - Two answers, kept apart: the ROUTING ENGINE has none, it is classical IR; a separate AI layer exists (section 16) and only 1.8% of its answers reach an LLM. "
             "2. \"How accurate is it?\" - 100% validity (relevance-set), 71.7% rank quality, 19.2% exact match; "
             "defend the measurement design. 3. \"Is the tracking real?\" - No, simulated by default, and the code is built so "
             "it cannot be published as real.", warn=True)

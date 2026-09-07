@@ -192,9 +192,10 @@ python -m app.ai.ingestion.doc_pipeline    # documentation index
 Without them the assistant still answers from the deterministic tools; it just
 cannot cite source files. Optional `GEMINI_API_KEY` enables a hosted LLM —
 without it the layer uses a grounded deterministic model that assembles answers
-from retrieved evidence. See `AI_ARCHITECTURE.md`, `AI_SECURITY.md` and
-`AI_EVALUATION.md`; `AI_IMPLEMENTATION_FINAL_REPORT.md` records what was
-verified and what was not.
+from retrieved evidence. Sections 40-42 of `docs/DBARS_Project_Defense_and_Codebase_Mastery.docx`
+cover the architecture, the security model, the defects it exposed in the
+routing engine, and -- in section 42 -- what was measured versus what was only
+claimed.
 
 ## Testing
 ```bash

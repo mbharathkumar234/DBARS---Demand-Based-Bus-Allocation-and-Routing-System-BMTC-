@@ -85,7 +85,7 @@
       "sample_count": 120,
       "definition": "best = fewest intermediate stops, then highest trip_count, then shortest distance"
     },
-    "training_seconds": 10.663,
+    "training_seconds": 8.063,
     "dataset_profile": {
       "rows": 6737,
       "unique_bus_numbers": 3940,
@@ -124,5 +124,5 @@
     "max_stops_per_route": 95,
     "avg_stops_per_route": 30.29
   },
-  "trained_at": 1788761688.4133372
+  "trained_at": 1788763785.181333
 }

@@ -17,7 +17,7 @@ def section_36(doc):
         ["Scalability", "Rate limiter, plan caches and vehicle\nstore all in process memory", "core/rate_limit.py,\nservice singletons", "High - blocks\nhorizontal scaling"],
         ["Observability", "No global exception handler, no request\nids, no metrics, no tracing", "None registered in\nmain.py", "High - production\ndebugging would be\nguesswork"],
         ["Reliability", "No multi-document transactions", "No start_session use\nanywhere", "Medium - a crash\nmid-sign-off leaves a\nwaybill inconsistent"],
-        ["Naming", "train() does not train; the AI assistant\nis a string parser", "ml/predictor.py,\nAssistantPanel.tsx", "Medium - actively\nmisleads readers and\ninvites bad claims"],
+        ["Naming", "train() does not train. The old string-parser\n'assistant' is superseded by the AI layer (section 40)", "ml/predictor.py", "Medium - actively\nmisleads readers and\ninvites bad claims"],
         ["Dependencies", "@vis.gl/react-google-maps declared but\nnever imported", "No import anywhere\nin src/", "Low - dead weight"],
         ["Dependencies", "numpy, scipy, scikit-learn shipped in\nproduction for a benchmark only", "requirements.txt vs\nml/tfidf.py usage", "Low - image size"],
         ["Frontend", "1.6 MB bundle (468 KB gzipped), no code\nsplitting", "Vite build warning", "Medium - slow first\nload on mobile"],

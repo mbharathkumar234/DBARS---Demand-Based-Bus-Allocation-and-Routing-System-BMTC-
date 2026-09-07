@@ -36,7 +36,6 @@ class DocumentationIngestionPipeline:
         # 1. Target files and directories
         doc_targets: List[Path] = [
             self.repo_root / "README.md",
-            self.repo_root / "AI_PROTECTED_FILES.md",
         ]
 
         docs_dir = self.repo_root / "docs"

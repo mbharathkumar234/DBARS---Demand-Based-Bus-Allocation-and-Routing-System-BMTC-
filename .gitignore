@@ -57,3 +57,7 @@ backend/.env.*
 #   python -m app.ai.ingestion.pipeline
 #   python -m app.ai.ingestion.doc_pipeline
 backend/artifacts/ai_indices/
+
+# Benchmark reports, regenerated on every evaluation run
+backend/artifacts/ai_benchmark_report.md
+backend/artifacts/codebase_qa_report.md
