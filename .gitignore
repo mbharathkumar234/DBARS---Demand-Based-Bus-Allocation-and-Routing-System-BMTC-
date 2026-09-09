@@ -61,3 +61,6 @@ backend/artifacts/ai_indices/
 # Benchmark reports, regenerated on every evaluation run
 backend/artifacts/ai_benchmark_report.md
 backend/artifacts/codebase_qa_report.md
+
+# Word lock files (created while a .docx is open)
+~$*

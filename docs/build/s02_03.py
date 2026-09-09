@@ -60,7 +60,7 @@ def section_2(doc):
         ("No ORM.", "MongoDB is accessed directly through Motor. There is no SQLAlchemy, Django ORM or Prisma anywhere."),
         ("No JWT library.", "The JSON Web Token implementation is hand-written using hmac and hashlib in auth/auth.py."),
         ("No trained model file.", "There are no .pkl or .h5 weights. scikit-learn appears only in a TF-IDF benchmark baseline."),
-        ("No LLM and no AI API.", "Despite the word \"AI\" appearing in some UI text and folder history, there is no language model in the project. See Section 16."),
+        ("No LLM in the routing engine.", "The bus predictor contains no language model. A separate AI layer (Section 40) does use embeddings, a FAISS vector store and an optional Gemini call - keep the two apart. See Section 16."),
         ("No payment gateway.", "No Razorpay, Stripe or UPI SDK is present."),
         ("No queue and no cache server.", "No Redis, RabbitMQ or Celery. Expensive computations are cached in process memory instead."),
     ])
@@ -187,13 +187,19 @@ def section_3(doc):
     ], widths=[1.3, 1.95, 1.75, 1.9])
 
     h(doc, 2, "3.7 AI / ML Architecture")
-    para(doc, "There is no artificial intelligence, no language model and no trained neural network in "
-              "this project. This has to be stated plainly, because parts of the interface use the word "
-              "\"AI\" and an examiner may well ask about it.", bold=True)
-    para(doc, "What exists instead is a classical information-retrieval and graph-search system, plus a "
-              "benchmark harness that compares it against three baselines. This is covered fully in "
-              "Section 16 and Section 25. CONFIRMED: no LLM SDK, no model weight file and no inference "
-              "API call appears anywhere in the repository.")
+    para(doc, "Two separate things live under this heading, and conflating them is the mistake to "
+              "avoid. The ROUTING ENGINE - the thing that predicts buses - contains no artificial "
+              "intelligence, no language model and no trained neural network. It is classical "
+              "information retrieval and graph search: an inverted index, an ordered stop-pair index "
+              "and a hand-weighted ranking function, benchmarked against three baselines.", bold=True)
+    para(doc, "A separate AI Intelligence Layer was added afterwards, under backend/app/ai. That one "
+              "does contain machine-learning machinery: sentence-level retrieval over an AST-chunked "
+              "code index and a documentation index, a FAISS vector store, BM25 fused with vector "
+              "similarity by Reciprocal Rank Fusion, and an optional Gemini call. It answers questions "
+              "ABOUT the system; it does not route buses, and the engine does not import it.")
+    para(doc, "The honest framing, and the one to use in a viva: no model decides which bus you catch. "
+              "Sections 40 to 42 cover the AI layer in full, including the measurement showing that "
+              "only 1.8% of its benchmark answers actually reach a language model.")
 
     h(doc, 2, "3.8 Authentication Architecture")
     code(doc,

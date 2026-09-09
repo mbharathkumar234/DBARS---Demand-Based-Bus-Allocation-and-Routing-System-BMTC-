@@ -79,7 +79,7 @@ def section_32(doc):
         ["8", "Block versus duty", "A block is a bus's day; a duty is a person's day"],
         ["9", "The headline\noperations figures", "6,849 buses, 44 depots, 15,636 duties, 2.28 crew per bus"],
         ["10", "The two fare fields", "fare_value_inr is what the state reimburses; fare_collected_inr is\nwhat the passenger paid"],
-        ["11", "There is no AI", "Classical information retrieval and graph search, plus a benchmark"],
+        ["11", "Where the AI is,\nand is not", "The bus predictor: none, classical IR and graph search. The AI\nlayer (S40): real retrieval, but only 1.8% of answers reach an LLM"],
         ["12", "What is simulated", "Vehicle positions, payment, Shakti eligibility verification"],
         ["13", "The hardest bug", "Unanchored stop resolution, and the name-matched transfer bug beneath it"],
         ["14", "Auth in one sentence", "PBKDF2 hashed passwords, HMAC-signed tokens, three signing domains,\nrole checks by dependency"],

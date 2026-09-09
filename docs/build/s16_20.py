@@ -7,13 +7,18 @@ def section_16(doc):
     h(doc, 1, "16. AI / ML / LLM Deep Dive")
 
     h(doc, 2, "16.1 The honest headline")
-    callout(doc, "There is no AI in this project",
-            "No large language model, no neural network, no trained model file, no inference API, no "
-            "embeddings and no vector database. CONFIRMED: the repository contains no LLM SDK, no .pkl "
-            "or .h5 weights, and no call to any model provider. Some UI text and an earlier folder name "
-            "use the word \"AI\"; that wording is misleading and should be corrected. Claiming AI in a "
-            "viva would be a claim an examiner could disprove in thirty seconds.", warn=True)
-    para(doc, "What the project actually contains is a classical information-retrieval and graph-search "
+    callout(doc, "No model decides which bus you catch",
+            "The routing engine contains no large language model, no neural network, no trained model "
+            "file and no inference API. CONFIRMED: no .pkl or .h5 weights, and no model-provider call "
+            "on any path reachable from /predict. Everything in this section describes that engine.",
+            warn=True)
+    para(doc, "This section was written before the AI Intelligence Layer existed and originally said "
+              "the repository contained no embeddings and no vector database. That is no longer true: "
+              "backend/app/ai carries a FAISS vector store, an embedding provider and an optional "
+              "Gemini binding - see Sections 40 to 42. The two are separate subsystems, and the "
+              "distinction is the whole point. Claiming the BUS PREDICTOR uses AI is still a claim an "
+              "examiner could disprove in thirty seconds.")
+    para(doc, "What the engine actually contains is a classical information-retrieval and graph-search "
               "system, plus a small benchmark harness that scores four candidate ranking strategies. "
               "That is a defensible and interesting thing to have built - it just is not machine "
               "learning in the modern sense.")
@@ -134,10 +139,13 @@ def section_16(doc):
               "to how a neural network works.")
 
     h(doc, 2, "16.6 Where the word AI does appear, and what to say")
-    para(doc, "The interface includes an \"AI assistant\" panel (AssistantPanel.tsx). It accepts free "
-              "text such as \"Majestic to Whitefield\" and answers with a route. Its implementation is "
-              "string splitting on separator words, followed by the same /predict call the form makes. "
-              "There is no language model behind it.")
+    para(doc, "Two different things have carried the label. The older one is the \"AI assistant\" "
+              "panel (AssistantPanel.tsx): free text such as \"Majestic to Whitefield\", parsed by "
+              "string splitting on separator words, then the same /predict call the form makes. No "
+              "language model is behind that, and calling it an assistant overstated it.")
+    para(doc, "The newer one is the DBARS AI Copilot, which is a real retrieval system with grounding "
+              "checks, role-gated read-only tools and an optional LLM (Sections 40 to 42). When an "
+              "examiner asks about \"the AI\", establish which one they mean before answering.")
     para(doc, "The honest description is \"natural-language input\", not \"AI assistant\". If an "
               "examiner asks, say exactly that - the parsing is deterministic and you can show the "
               "twelve lines that do it.")

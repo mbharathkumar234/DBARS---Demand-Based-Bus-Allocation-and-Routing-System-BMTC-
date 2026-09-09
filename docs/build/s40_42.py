@@ -42,14 +42,83 @@ def section_40(doc):
                   "routes instead of 93, logged a warning, and every deterministic feature behaved "
                   "identically.")
 
-    h(doc, 2, "40.3 Retrieval")
-    table(doc, ["Stage", "What it does", "Detail"], [
-        ["Ingestion", "Walks the repository, skips secrets\nand build output", "244 files, 1,592\nchunks"],
-        ["Chunking", "Python parsed with ast; one chunk per\nmodule, class and function", "Citations point at\npredictor.py:412-455,\nnot 'chunk 87'"],
-        ["Embedding", "Hashed word and character n-grams,\n384 dimensions", "Lexical, not semantic\n- see 42.3"],
-        ["Lexical", "BM25, k1=1.5, b=0.75", "Carries exact symbol\nmatches"],
-        ["Fusion", "Reciprocal Rank Fusion, k=60", "Rank-based, so the two\nscore scales never\nneed calibrating"],
-    ], widths=[1.1, 3.0, 1.9])
+    h(doc, 2, "40.3 Retrieval-Augmented Generation")
+    para(doc, "RAG is the part of this layer most worth being able to defend, because it is where the "
+              "interesting design decisions are. The shape is standard - retrieve, then ground an "
+              "answer in what was retrieved - but three choices here are worth explaining.")
+
+    h(doc, 3, "40.3.1 The pipeline")
+    code(doc,
+         "question\n"
+         "   |\n"
+         "   +-> QueryRouter          code / documentation / operations / travel / hybrid\n"
+         "   +-> expand_query()       plain words -> the identifiers the code uses\n"
+         "   |\n"
+         "   +-> VECTOR  search       FAISS IndexFlatIP, 384-d, cosine on normalised vectors\n"
+         "   +-> LEXICAL search       BM25, k1=1.5, b=0.75\n"
+         "   |\n"
+         "   +-> Reciprocal Rank Fusion   score(d) = SUM 1 / (60 + rank_i(d))\n"
+         "   |\n"
+         "   +-> Citations            file, symbol, start_line, end_line, snippet\n"
+         "   +-> grounding_verifier   labels CONFIRMED / INFERRED / UNKNOWN",
+         caption="Two indices are built: code (1,560 chunks over 235 files) and documentation "
+                 "(262 chunks over 20 files).")
+
+    h(doc, 3, "40.3.2 Chunking is symbol-aware, not fixed-width")
+    para(doc, "Python is parsed with the ast module and emits one chunk per meaningful unit - a "
+              "module chunk carrying the docstring and imports, a class-overview chunk, and one chunk "
+              "per method and top-level function. Each carries file, symbol, type, start_line and "
+              "end_line.")
+    para(doc, "This is why a citation reads predictor.py:412-455 with a function name rather than "
+              "'chunk 87', and why a question about a function retrieves that function instead of a "
+              "600-character window straddling two unrelated definitions. TypeScript is chunked by "
+              "declaration with a regex parser, because no TS AST is available in-process.")
+
+    h(doc, 3, "40.3.3 Why the retrieval is hybrid")
+    table(doc, ["Half", "What it contributes", "Where it fails alone"], [
+        ["Vector (FAISS)", "Tolerates paraphrase and word order",
+         "Cannot match an exact\nsymbol it has not seen"],
+        ["BM25 lexical", "Exact identifiers: require_role,\nBMTCBusPredictor, route_distance",
+         "Blind to a question that\nshares no token with the\ncode"],
+    ], widths=[1.3, 2.6, 2.1])
+    para(doc, "Reciprocal Rank Fusion combines them on RANK rather than score, so the two "
+              "incomparable scales never need calibrating and a document ranked highly by either "
+              "half surfaces. k = 60 is the standard constant from the original RRF paper.")
+
+    h(doc, 3, "40.3.4 The embedding decision, and the vocabulary gap")
+    para(doc, "The default embedding provider is deterministic hashed n-grams, not a neural model. "
+              "That is a deliberate choice backed by measurement, and section 42.3 gives the numbers - "
+              "swapping in all-MiniLM-L6-v2 produced no improvement at 80x the load time.")
+    callout(doc, "State this limitation before an examiner finds it",
+            "Hashed n-grams are a LEXICAL signal. 'How is the fare computed' and 'where is pricing "
+            "calculated' do not land near each other the way true sentence embeddings would, so the "
+            "dense half behaves like a fuzzy keyword index. Calling it semantic search would be an "
+            "overstatement.", warn=True)
+    para(doc, "The gap is bridged by query expansion: about twenty mappings from plain language to "
+              "the identifiers this codebase actually uses - 'travelling time' adds duration_minutes "
+              "and route_distance, 'fare' adds price_ticket. It was added after a concrete failure: "
+              "the question 'how is travelling time calculated' returned README.md, a translations "
+              "JSON and a planning document, while distance.py - which computes it, 23 chunks of it - "
+              "sat unranked in the same index. That is a hand-written vocabulary, not a learned one, "
+              "and a question phrased outside it can still under-retrieve.")
+
+    h(doc, 3, "40.3.5 Grounding")
+    para(doc, "Retrieval alone does not stop a wrong answer. The same question above was originally "
+              "answered 'Execution enters through README.md' with a line range presented as a "
+              "function, and reported as CONFIRMED. The answer template took the top citation, "
+              "whatever it was, and asserted a call path through it.")
+    bullets(doc, [
+        ("Source files are preferred over prose and configuration,", "and implementation files over "
+         "tests - a test exercising a feature is not an answer to where it is implemented."),
+        ("Line-range pseudo-symbols are never presented as functions.", "README.md:L1-L60 is a chunk "
+         "address produced by the generic chunker, not a definition."),
+        ("An execution flow is described only from a named symbol.", "When only documentation "
+         "matches, the answer says so and carries a limitation instead of narrating a call path."),
+        ("verify_function_exists() checks a symbol against the indexed AST", "before the assistant "
+         "will discuss it, so a question about a function that does not exist returns UNKNOWN.")
+    ])
+    evidence(doc, "23 regression tests in tests/test_codebase_answer_grounding.py, including a "
+                  "reconstruction of the documentation-only case that asserts the answer admits it.")
 
     h(doc, 2, "40.4 Security: what was wrong, and what it is now")
     callout(doc, "The layer shipped as a working authentication bypass",

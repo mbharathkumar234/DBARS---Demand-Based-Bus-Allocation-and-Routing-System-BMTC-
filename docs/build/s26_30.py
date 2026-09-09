@@ -320,10 +320,13 @@ def section_27(doc):
             "credibility, because an examiner will ask which model and where the weights are.", warn=True)
     _qa(doc, [
         ("Did you use AI or machine learning?",
-         "No language model and no trained neural network. The search is an inverted index plus an "
-         "ordered stop-pair index with a hand-weighted scoring function - classical information "
-         "retrieval. I did build a benchmark harness that scores four ranking strategies, and "
-         "scikit-learn appears there for a TF-IDF baseline, but nothing is fitted or learned."),
+         "Not for routing. The search is an inverted index plus an ordered stop-pair index with a "
+         "hand-weighted scoring function - classical information retrieval, nothing fitted or "
+         "learned. scikit-learn appears only in a TF-IDF benchmark baseline. Separately I built an "
+         "AI layer that answers questions about the system: retrieval over the codebase and docs "
+         "with a FAISS vector store, and an optional LLM. I would add that only 1.8% of its "
+         "benchmark answers actually reach the model - it is retrieval and templating with an LLM "
+         "available, and I would not call it LLM-powered."),
         ("Then why does train() exist?",
          "It is a misleading name for index building plus evaluation. It loads the CSV, builds the "
          "indexes and measures the candidate rankers. No parameters are learned."),
