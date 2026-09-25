@@ -1,126 +1,212 @@
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Set, Tuple
+from pathlib import PurePosixPath
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
+
+from app.ai.rag.text import (
+    STOP_WORDS,
+    AnalyzedQuery,
+    analyze_query,
+    chunk_search_text,
+    defined_names,
+    normalize_for_phrases,
+    split_identifier,
+    stem,
+    tokenize,
+)
 
 
 class LexicalIndex:
-    """BM25 and exact symbol index for source code and documentation chunks."""
+    """BM25 index plus exact symbol and file-name lookup over chunk metadata."""
 
-    def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
+    STOP_WORDS = STOP_WORDS
+
+    def __init__(self, k1: float = 1.2, b: float = 0.75) -> None:
         self.k1 = k1
         self.b = b
         self.corpus: List[Dict[str, Any]] = []
         self.doc_len: List[int] = []
         self.avg_doc_len: float = 0.0
-        self.inverted_index: Dict[str, List[Tuple[int, int]]] = defaultdict(list)  # term -> [(doc_idx, freq)]
-        self.symbol_index: Dict[str, List[int]] = defaultdict(list)  # normalized symbol -> [doc_idx]
-        self.file_index: Dict[str, List[int]] = defaultdict(list)  # filename -> [doc_idx]
-
-    STOP_WORDS = {
-        "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "with",
-        "by", "from", "is", "are", "was", "were", "be", "been", "being", "have", "has",
-        "had", "do", "does", "did", "what", "which", "who", "whom", "this", "that", "these",
-        "those", "it", "its", "as", "if", "then", "else", "when", "where", "how", "all",
-        "any", "both", "each", "few", "more", "most", "other", "some", "such", "no", "nor",
-        "not", "only", "own", "same", "so", "than", "too", "very", "can", "will", "just", "about",
-    }
+        self.inverted_index: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
+        self.idf: Dict[str, float] = {}
+        self.term_sets: List[FrozenSet[str]] = []
+        self.phrase_text: List[str] = []
+        self.symbol_index: Dict[str, List[int]] = defaultdict(list)
+        self.symbol_parts: List[FrozenSet[str]] = []
+        self.definition_parts: List[Tuple[FrozenSet[str], ...]] = []
+        self.file_index: Dict[str, List[int]] = defaultdict(list)
+        self._position: Dict[int, int] = {}
 
     @staticmethod
     def _tokenize(text: str, filter_stops: bool = True) -> List[str]:
-        tokens = re.findall(r"[A-Za-z0-9_]+", text.lower())
-        sub_tokens: List[str] = []
-        for t in tokens:
-            if filter_stops and t in LexicalIndex.STOP_WORDS:
-                continue
-            sub_tokens.append(t)
-            if "_" in t:
-                sub_tokens.extend([part for part in t.split("_") if part and (not filter_stops or part not in LexicalIndex.STOP_WORDS)])
-        return sub_tokens
+        return tokenize(text, filter_stops=filter_stops)
 
     def build_index(self, chunks: List[Dict[str, Any]]) -> None:
         """Index a list of chunk metadata dictionaries."""
         self.corpus = chunks
         self.doc_len = []
-        self.inverted_index.clear()
-        self.symbol_index.clear()
-        self.file_index.clear()
+        self.inverted_index = defaultdict(list)
+        self.term_sets = []
+        self.phrase_text = []
+        self.symbol_index = defaultdict(list)
+        self.symbol_parts = []
+        self.definition_parts = []
+        self.file_index = defaultdict(list)
+        self._position = {id(chunk): i for i, chunk in enumerate(chunks)}
 
-        total_tokens = 0
+        total = 0
         for doc_idx, chunk in enumerate(chunks):
-            # Index exact symbol name
-            symbol = chunk.get("symbol", "")
-            if symbol:
-                norm_sym = symbol.lower()
-                self.symbol_index[norm_sym].append(doc_idx)
-                # also index short symbol if Class.method
-                if "." in norm_sym:
-                    short_sym = norm_sym.split(".")[-1]
-                    self.symbol_index[short_sym].append(doc_idx)
+            symbol = str(chunk.get("symbol") or "")
+            short = symbol.split(".")[-1]
+            parts: FrozenSet[str] = frozenset()
+            if symbol and ":L" not in symbol:
+                lowered = symbol.lower()
+                keys = {lowered, lowered.split(".")[-1]}
+                for key in keys:
+                    self.symbol_index[key].append(doc_idx)
+                if not short.startswith("__"):
+                    parts = frozenset(stem(p) for p in split_identifier(short) if p not in STOP_WORDS)
+            self.symbol_parts.append(parts)
+            defined = []
+            for name in set(defined_names(chunk.get("content", "") or "")):
+                name_parts = frozenset(stem(p) for p in split_identifier(name) if p not in STOP_WORDS)
+                if len(name_parts) >= 2:
+                    defined.append(name_parts)
+            self.definition_parts.append(tuple(defined))
 
-            # Index filename
-            filepath = chunk.get("file", "")
+            filepath = str(chunk.get("file") or "").replace("\\", "/")
             if filepath:
-                filename = filepath.replace("\\", "/").split("/")[-1].lower()
-                self.file_index[filename].append(doc_idx)
+                name = PurePosixPath(filepath).name.lower()
+                self.file_index[name].append(doc_idx)
+                stem_name = name.split(".")[0]
+                if stem_name != name:
+                    self.file_index[stem_name].append(doc_idx)
 
-            # Index full text for BM25
-            content = f"{symbol} {filepath} {chunk.get('section', '')} {chunk.get('content', '')}"
-            tokens = self._tokenize(content)
+            text = chunk_search_text(chunk)
+            tokens = tokenize(text)
             self.doc_len.append(len(tokens))
-            total_tokens += len(tokens)
-
+            total += len(tokens)
             tf = Counter(tokens)
             for term, freq in tf.items():
                 self.inverted_index[term].append((doc_idx, freq))
+            self.term_sets.append(frozenset(tf))
+            self.phrase_text.append(normalize_for_phrases(chunk.get("content", "") + " " + symbol))
 
-        self.avg_doc_len = total_tokens / max(1, len(chunks))
+        n = max(1, len(chunks))
+        self.avg_doc_len = total / n
+        self.idf = {
+            term: math.log(1.0 + (n - len(postings) + 0.5) / (len(postings) + 0.5))
+            for term, postings in self.inverted_index.items()
+        }
 
-    def search(self, query: str, top_k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
-        """Search chunks using exact symbol boosting + BM25 scoring."""
+    def position_of(self, meta: Mapping[str, Any]) -> Optional[int]:
+        return self._position.get(id(meta))
+
+    def exact_hits(self, query: AnalyzedQuery) -> Dict[int, str]:
+        """Chunks named by the query: an identifier it spells, or a file it names."""
+        hits: Dict[int, str] = {}
+        for ident in query.identifiers:
+            for key in {ident.lower(), ident.lower().split(".")[-1]}:
+                for doc_idx in self.symbol_index.get(key, []):
+                    hits[doc_idx] = "symbol"
+        # A single distinctive word can still be a symbol name ("predictor",
+        # "lifespan"); common words cannot, so require it to be rare.
+        for word in query.raw.replace("(", " ").replace(")", " ").split():
+            key = word.strip("`'\".,?!:;").lower()
+            if len(key) >= 6 and key not in STOP_WORDS and len(self.symbol_index.get(key, [])) <= 3:
+                for doc_idx in self.symbol_index.get(key, []):
+                    hits.setdefault(doc_idx, "symbol")
+        for filename in query.filenames:
+            for key in {filename, filename.split(".")[0]}:
+                for doc_idx in self.file_index.get(key, []):
+                    hits.setdefault(doc_idx, "file")
+        for ident in query.identifiers:
+            for doc_idx in self.file_index.get(ident.lower(), []):
+                hits.setdefault(doc_idx, "file")
+        return hits
+
+    def bm25(self, query: AnalyzedQuery) -> Dict[int, float]:
+        scores: Dict[int, float] = defaultdict(float)
+        for term in query.terms:
+            postings = self.inverted_index.get(term)
+            if not postings:
+                continue
+            idf = self.idf[term]
+            for doc_idx, freq in postings:
+                norm = 1.0 - self.b + self.b * (self.doc_len[doc_idx] / max(1.0, self.avg_doc_len))
+                scores[doc_idx] += idf * (freq * (self.k1 + 1.0)) / (freq + self.k1 * norm)
+        return scores
+
+    def coverage(
+        self,
+        doc_idx: int,
+        weights: Mapping[str, float],
+        alternatives: Optional[Mapping[str, Set[str]]] = None,
+    ) -> float:
+        """IDF-weighted share of the query's terms that the chunk contains.
+
+        A term also counts as present when the chunk has one of its
+        ``alternatives`` -- the identifiers a vocabulary bridge maps it to.
+        """
+        total = sum(weights.values())
+        if total <= 0:
+            return 0.0
+        present = self.term_sets[doc_idx]
+        alternatives = alternatives or {}
+        covered = sum(
+            w for t, w in weights.items()
+            if t in present or not present.isdisjoint(alternatives.get(t, ()))
+        )
+        return covered / total
+
+    def symbol_overlap(self, doc_idx: int, query: AnalyzedQuery) -> float:
+        """How fully the question names this chunk's symbol.
+
+        "what crowding levels exist" names ``CrowdingLevel`` although it never
+        spells it. Every part must match: sharing two of three words with
+        ``_AI_LAYER_TOPIC`` does not make a question about that regex.
+        """
+        parts = self.symbol_parts[doc_idx]
+        if not parts or not parts <= query.term_set:
+            return 0.0
+        return 1.0 if len(parts) > 1 or len(next(iter(parts))) >= 5 else 0.0
+
+    def definition_hit(self, doc_idx: int, vocabulary: Set[str]) -> float:
+        """Whether the chunk defines a field or constant the question names.
+
+        "What is the maximum deadhead distance" names `max_deadhead_km: float
+        = 5.0` -- the line holding the answer -- without spelling it. Counted
+        when at least two of the name's words, and two thirds of them, are in
+        the question (units like `_minutes` are rarely said aloud).
+        """
+        for parts in self.definition_parts[doc_idx]:
+            matched = len(parts & vocabulary)
+            if matched >= 2 and matched * 3 >= len(parts) * 2:
+                return 1.0
+        return 0.0
+
+    def phrase_score(self, doc_idx: int, query: AnalyzedQuery) -> float:
+        """Share of the query's adjacent word pairs that appear verbatim."""
+        if not query.phrases:
+            return 0.0
+        text = self.phrase_text[doc_idx]
+        pairs = [p for p in query.phrases if len(p.split()) == 2]
+        longer = [p for p in query.phrases if len(p.split()) > 2]
+        score = sum(f" {p} " in text for p in pairs) / len(pairs) if pairs else 0.0
+        if any(f" {p} " in text for p in longer + query.quoted):
+            score = max(score, 1.0)
+        return score
+
+    def search(self, query: Union[str, AnalyzedQuery], top_k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
+        """BM25 ranking, with chunks the query names exactly always included."""
         if not self.corpus:
             return []
-
-        q_lower = query.lower()
-        query_terms = self._tokenize(query)
-        scores: Dict[int, float] = defaultdict(float)
-
-        # 1. Exact Symbol / File Boost (Massive boost for exact identifier matches)
-        COMMON_VERBS = {"stop", "start", "get", "set", "run", "close", "read", "write", "save", "load", "build", "parse", "test", "check", "add", "ready"}
-        for term in query_terms:
-            if term in self.symbol_index and term not in COMMON_VERBS:
-                for doc_idx in self.symbol_index[term]:
-                    scores[doc_idx] += 25.0
-            if term in self.file_index:
-                for doc_idx in self.file_index[term]:
-                    scores[doc_idx] += 15.0
-
-        # Check full query as symbol
-        clean_q = re.sub(r"[^\w\.]", "", q_lower)
-        if clean_q in self.symbol_index:
-            for doc_idx in self.symbol_index[clean_q]:
-                scores[doc_idx] += 30.0
-
-        # 2. BM25 scoring across terms
-        N = len(self.corpus)
-        for term in query_terms:
-            if term not in self.inverted_index:
-                continue
-            postings = self.inverted_index[term]
-            df = len(postings)
-            idf = math.log(1.0 + (N - df + 0.5) / (df + 0.5))
-
-            for doc_idx, freq in postings:
-                d_len = self.doc_len[doc_idx]
-                numerator = freq * (self.k1 + 1.0)
-                denominator = freq + self.k1 * (1.0 - self.b + self.b * (d_len / max(1.0, self.avg_doc_len)))
-                bm25 = idf * (numerator / max(1e-6, denominator))
-                scores[doc_idx] += bm25
-
-        if not scores:
-            return []
-
+        analyzed = analyze_query(query) if isinstance(query, str) else query
+        scores = self.bm25(analyzed)
+        top = max(scores.values(), default=1.0)
+        for doc_idx in self.exact_hits(analyzed):
+            scores[doc_idx] = scores.get(doc_idx, 0.0) + top
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         return [(self.corpus[doc_idx], score) for doc_idx, score in ranked]

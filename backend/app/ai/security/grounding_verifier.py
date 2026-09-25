@@ -43,18 +43,30 @@ REJECTED_TECHNOLOGIES = {
     "transformer": "Transformer architectures (e.g. BERT/GPT) are not part of the deterministic DBARS core routing engine.",
 }
 
-# Technologies confirmed to be part of DBARS
+# Technologies confirmed to be part of DBARS. SciPy and scikit-learn were
+# listed here as powering blocking and stop matching; neither is imported by
+# the application -- blocking is a chaining rule and TF-IDF is the project's
+# own TfidfIndex -- so answers crediting them were being confirmed.
 CONFIRMED_TECHNOLOGIES = {
     "mongodb": "MongoDB is the primary database, accessed asynchronously via Motor.",
     "motor": "Motor is the async MongoDB client library utilized for database operations.",
     "fastapi": "FastAPI is the web framework hosting all DBARS backend endpoints.",
     "pydantic": "Pydantic v2 defines all data schemas, request payloads, and response models.",
-    "scipy": "SciPy's linear_sum_assignment (Hungarian algorithm) powers depot vehicle blocking.",
-    "scikit-learn": "Scikit-learn / TF-IDF is used for stop name vectorization and fuzzy indexing.",
     "react": "React with TypeScript and Vite powers the DBARS frontend.",
     "vite": "Vite is the frontend bundler and build tool.",
     "typescript": "TypeScript is used for frontend static typing.",
 }
+
+KNOWN_CORE_SYMBOLS = (
+    "bmtcbuspredictor", "predict", "train", "autocomplete",
+    "load_routes", "routerecord", "create_app",
+    "compute_crew_plan", "schedule_crew", "blockingengine", "block_interlined", "block_by_route",
+    "gtfsfeedbuilder", "require_role", "hash_password", "verify_password", "get_current_user",
+    "tfidfindex", "fuzzy_ratio", "normalize_text",
+    "stop_pair_to_segments", "_resolve_stop_name", "_find_transfer_suggestions",
+    "add_turn", "clear_session", "get_history", "sessionmemorymanager", "session_memory",
+    "user_id", "session_id", "ai_tracer", "sessionclearrequest",
+)
 
 
 class GroundingEvaluation(BaseModel):
@@ -132,58 +144,33 @@ class GroundingVerifier:
             except Exception as e:
                 logger.warning("Could not load symbols from code store: %s", e)
 
-            # Core known symbols from DBARS architecture
-            symbols.update([
-                "bmtcbuspredictor", "predict", "train", "autocomplete", "stopregistry",
-                "load_routes", "dataset_profile", "routerecord", "create_app",
-                "compute_plan", "compute_crew_plan", "schedule_crew", "solve_blocking_hungarian",
-                "linear_sum_assignment", "deficit_function", "gtfsbuilder", "servicealertsfeed",
-                "avlfeed", "positionsimulator", "passservice", "waybillservice", "authservice",
-                "require_role", "verify_token", "hash_password", "get_current_user",
-                "tfidftransformer", "fuzzy_ratio", "normalize_text", "geodesic_distance",
-                "stop_pair_to_segments", "_resolve_stop", "_resolve_stop_name", "resolve_stop_sequence",
-                "resolve_stop_record", "_candidate_indices_for_pair", "_find_transfer_suggestions",
-                "add_turn", "clear_session", "get_history", "sessionmemory", "session_memory",
-                "user_id", "session_id", "aitracer", "tracecontext", "sessionclearrequest",
-            ])
+            # Core known symbols. Each must exist in the code -- sixteen names
+            # here once did not ("solve_blocking_hungarian", "waybillservice",
+            # "deficit_function", ...), which made the verifier confirm
+            # exactly the invented names it exists to reject.
+            # tests/test_codebase_topics_exist.py checks the list.
+            symbols.update(KNOWN_CORE_SYMBOLS)
             self._known_symbols = symbols
         return self._known_symbols
 
     def get_known_endpoints(self) -> Set[str]:
-        """Returns all authentic API endpoints registered in DBARS FastAPI routers."""
+        """Every "<method> <path>" the FastAPI app actually registers.
+
+        Read from the app's route table. It used to be a hand-written list of
+        31 endpoints, 15 of which did not exist (``post /routes/predict``,
+        ``post /blocking/plan``, ``get /gtfs/feed``...) while about 80 real ones
+        were missing -- so the verifier confirmed invented endpoints and
+        rejected real ones, downgrading correct answers that mentioned
+        ``POST /train``.
+        """
         if self._known_endpoints is None:
+            from app.main import create_app
+
             self._known_endpoints = {
-                "get /health",
-                "post /predict",
-                "post /routes/predict",
-                "get /routes/autocomplete",
-                "get /routes/stops",
-                "get /routes/{route_id}",
-                "get /routes/{route_id}/stops",
-                "get /routes/{route_id}/geometry",
-                "get /routes/{route_id}/realtime",
-                "get /gtfs/feed",
-                "get /gtfs/alerts",
-                "get /gtfs/vehicles",
-                "get /tracking/positions",
-                "post /blocking/plan",
-                "post /crew/schedule",
-                "post /auth/login",
-                "post /auth/register",
-                "get /auth/me",
-                "get /ai/health",
-                "post /ai/chat",
-                "post /ai/session/clear",
-                "get /ai/session/{session_id}/history",
-                "get /ai/observability/traces",
-                "get /ai/observability/traces/{request_id}",
-                "get /ai/observability/metrics",
-                "delete /ai/observability/traces",
-                "post /ai/evaluation/run",
-                "get /ai/evaluation/latest",
-                "get /ai/evaluation/categories",
-                "post /api/v1/predict",
-                "get /api/v1/routes",
+                f"{method.lower()} {route.path.lower()}"
+                for route in create_app().routes
+                for method in (getattr(route, "methods", None) or ())
+                if method != "HEAD"
             }
         return self._known_endpoints
 
@@ -231,11 +218,17 @@ class GroundingVerifier:
 
     def verify_endpoint_exists(self, method: str, path: str) -> Tuple[bool, str]:
         """Rule 5: Verify whether an API endpoint exists in DBARS."""
-        candidate = f"{method.strip().lower()} {path.strip().lower()}".rstrip("/")
-        known = self.get_known_endpoints()
+        claimed_method = method.strip().lower()
+        claimed_path = path.strip().lower().rstrip("/") or "/"
 
-        for ep in known:
-            if candidate == ep.rstrip("/") or path.strip().lower() in ep:
+        for ep in self.get_known_endpoints():
+            ep_method, ep_path = ep.split(" ", 1)
+            # "/routes/{route_id}" matches "/routes/335-E".
+            pattern = "^" + re.sub(r"\\\{[^/]+?\\\}", "[^/]+", re.escape(ep_path)) + "$"
+            if ep_method == claimed_method and re.match(pattern, claimed_path):
+                return True, f"API endpoint '{method.upper()} {path}' is CONFIRMED in DBARS FastAPI routes."
+            # A claimed prefix ("GET /ai/observability") names a real route group.
+            if ep_path.startswith(claimed_path + "/"):
                 return True, f"API endpoint '{method.upper()} {path}' is CONFIRMED in DBARS FastAPI routes."
 
         return False, (

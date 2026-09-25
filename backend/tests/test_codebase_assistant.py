@@ -68,7 +68,9 @@ EVALUATION_QUESTIONS = [
     {
         "id": "Q10",
         "question": "Which API endpoint calls the route prediction service?",
-        "expected_source": "predict.py",
+        # Was "predict.py": a file that does not exist, named by the curated
+        # answer this test was checking. POST /predict lives in api/routes.py.
+        "expected_source": "api/routes.py",
         "category": "API Gateway",
     },
     {
@@ -80,7 +82,9 @@ EVALUATION_QUESTIONS = [
     {
         "id": "Q12",
         "question": "Which modules depend on predictor.py?",
-        "expected_source": "predict.py",
+        # Was "predict.py" (nonexistent). The importers are main.py and
+        # ai/tools/routing_tools.py.
+        "expected_source": "main.py",
         "category": "Dependencies",
     },
     {

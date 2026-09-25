@@ -76,6 +76,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("AI layer unavailable; skipping predictor injection")
 
+    # The AI search indices are build artifacts (gitignored) that nothing used
+    # to rebuild: a fresh clone had none, and an edited codebase was searched
+    # as it was weeks earlier. Checked in a worker thread so a rebuild never
+    # delays startup; a stale index keeps serving until its replacement lands.
+    try:
+        from app.ai.ingestion.freshness import ensure_indices
+        app.state.ai_index_task = asyncio.create_task(asyncio.to_thread(ensure_indices))
+    except Exception:
+        logger.debug("AI layer unavailable; skipping index freshness check")
+
     # Warm the vehicle-blocking plan in the background. It takes ~25s to
     # compute, and whoever opens the depot dashboard first would otherwise sit
     # watching a spinner for that long. Fire-and-forget rather than awaited, so

@@ -31,6 +31,10 @@ class Citation(BaseModel):
     end_line: Optional[int] = Field(default=None, description="Ending line number")
     section: Optional[str] = Field(default=None, description="Document section header")
     snippet: Optional[str] = Field(default=None, description="Excerpt of retrieved text")
+    relevance: Optional[float] = Field(
+        default=None,
+        description="0-1: share of the question's terms or phrases the source contains; retrieved sources only",
+    )
 
 
 class ToolExecutionRecord(BaseModel):

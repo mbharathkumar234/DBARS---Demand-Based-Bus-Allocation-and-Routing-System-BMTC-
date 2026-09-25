@@ -6,7 +6,6 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 
 from app.ai.config import ai_settings
@@ -31,11 +30,15 @@ class LangChainOrchestrator:
     def __init__(self) -> None:
         self.retriever = hybrid_retriever
         self.llm = get_chat_model()
-        self.output_parser = StrOutputParser()
         self._build_pipeline()
 
     def _build_pipeline(self) -> None:
-        """Construct the LangChain LCEL pipeline."""
+        """Construct the LangChain LCEL pipeline.
+
+        Ends at the model, not a string parser: the message's metadata says
+        which model actually answered, which differs from the configured one
+        whenever Gemini fails and the grounded fallback answers instead.
+        """
         self.chain = (
             RunnablePassthrough.assign(
                 context=lambda x: self._format_evidence(x["citations"]),
@@ -43,7 +46,6 @@ class LangChainOrchestrator:
             )
             | QA_PROMPT
             | self.llm
-            | self.output_parser
         )
 
     @staticmethod
@@ -53,12 +55,34 @@ class LangChainOrchestrator:
         blocks = []
         for i, c in enumerate(citations, start=1):
             provenance = f"[{i}] {c.source_type.upper()}: {c.path}"
-            if c.symbol:
-                provenance += f" (symbol: {c.symbol}, lines {c.start_line}-{c.end_line})"
+            if c.start_line and c.end_line:
+                provenance += f", lines {c.start_line}-{c.end_line}"
+            if c.symbol and ":L" not in c.symbol:
+                provenance += f" (symbol: {c.symbol})"
             elif c.section:
                 provenance += f" (section: {c.section})"
             blocks.append(f"{provenance}\n{c.snippet}")
         return "\n\n".join(blocks)
+
+    # Relevance is the share of the question's terms (or its phrases) a source
+    # contains. Below MIN_RELEVANCE a citation is noise and is not shown to the
+    # model or the user; CONFIRMED needs the best source to cover most of the
+    # question. "Any citation at all" used to be enough for CONFIRMED, which
+    # is how an answer built on four unrelated snippets got the green badge.
+    MIN_RELEVANCE = 0.25
+    CONFIRMED_RELEVANCE = 0.75
+    INFERRED_RELEVANCE = 0.45
+
+    @classmethod
+    def _grounding_from_support(cls, citations: List[Citation], tools: List[ToolExecutionRecord]) -> GroundingConfidence:
+        if any(t.status == "success" for t in tools):
+            return GroundingConfidence.CONFIRMED
+        support = max((c.relevance or 0.0 for c in citations), default=0.0)
+        if support >= cls.CONFIRMED_RELEVANCE:
+            return GroundingConfidence.CONFIRMED
+        if support >= cls.INFERRED_RELEVANCE:
+            return GroundingConfidence.INFERRED
+        return GroundingConfidence.UNKNOWN
 
     @staticmethod
     def _format_tools(tool_records: List[ToolExecutionRecord]) -> str:
@@ -88,6 +112,7 @@ class LangChainOrchestrator:
         # role -- the UI badge read "gemini-3.6-flash" on answers Gemini never
         # saw.
         llm_invoked = False
+        answered_by: Optional[str] = None
 
         from app.ai.observability import ai_tracer, AITraceStage
         trace_ctx = ai_tracer.start_trace(
@@ -378,10 +403,14 @@ class LangChainOrchestrator:
             else:
                 # 1. Retrieval
                 with trace_ctx.time_stage(AITraceStage.RETRIEVAL):
+                    # Six, not four: measured on the retrieval benchmark's dev
+                    # split, 6 raised evidence@k from 0.83 to 0.90 and 8 added
+                    # nothing. Six ~1000-character excerpts fit the context.
                     citations = self.retriever.retrieve_citations(
                         query=query,
                         mode=request.retrieval_mode,
-                        top_k=4,
+                        top_k=6,
+                        min_relevance=self.MIN_RELEVANCE,
                     )
 
                 # 2. Context Assembly & LLM Generation via LangChain LCEL
@@ -393,16 +422,22 @@ class LangChainOrchestrator:
 
                 with trace_ctx.time_stage(AITraceStage.LLM_GENERATION):
                     llm_invoked = True
-                    raw_answer = await self.chain.ainvoke(chain_input)
+                    message = await self.chain.ainvoke(chain_input)
+                    raw_answer = message.content if isinstance(message.content, str) else str(message.content)
+                    answered_by = (message.response_metadata or {}).get("model_name")
 
-                # 3. Grounding Confidence Assignment
-                if "UNKNOWN" in raw_answer or "cannot be established" in raw_answer:
+                # 3. Grounding: how much of the question the evidence covers.
+                # Only an outright refusal is UNKNOWN. A partial answer that
+                # says what the evidence does not show is still an answer.
+                stripped = raw_answer.strip()
+                refused = stripped.lower().startswith("information regarding") or (
+                    "cannot be established" in stripped and len(stripped) < 300
+                )
+                if refused:
                     grounding = GroundingConfidence.UNKNOWN
                     citations = []
-                elif citations or tools:
-                    grounding = GroundingConfidence.CONFIRMED
                 else:
-                    grounding = GroundingConfidence.UNKNOWN
+                    grounding = self._grounding_from_support(citations, tools)
 
         except Exception as e:
             logger.exception("Error during LangChain orchestration: %s", e)
@@ -463,7 +498,7 @@ class LangChainOrchestrator:
             tools_called=tools,
             session_id=session_id,
             model_used=(
-                getattr(self.llm, "model_name", ai_settings.model_name)
+                (answered_by or getattr(self.llm, "model_name", ai_settings.model_name))
                 if llm_invoked
                 else "dbars-deterministic-agent"
             ),

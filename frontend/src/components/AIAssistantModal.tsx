@@ -96,7 +96,7 @@ const MODE_CONFIG: Record<
     suggestions: [
       "How do I reach Whitefield from Majestic?",
       "How many total buses are needed in the blocking plan?",
-      "Explain the deficit function in blocking.py",
+      "Explain how block_interlined chains trips in blocking.py",
     ],
   },
   documentation: {

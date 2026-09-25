@@ -35,7 +35,7 @@ class AISettings:
     embedding_model: str = os.getenv("AI_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     embedding_provider: str = os.getenv("AI_EMBEDDING_PROVIDER", "deterministic")
     temperature: float = float(os.getenv("AI_TEMPERATURE", "0.2"))
-    max_tokens: int = int(os.getenv("AI_MAX_TOKENS", "1024"))
+    max_tokens: int = int(os.getenv("AI_MAX_TOKENS", "2048"))
 
     # API Keys (read safely from environment)
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))

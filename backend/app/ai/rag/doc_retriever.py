@@ -26,12 +26,14 @@ class DocumentationRetriever:
     def is_available(self) -> bool:
         return (self.index_path / "index.faiss").exists() and (self.index_path / "metadata.json").exists()
 
-    def retrieve(self, query: str, top_k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
+    def retrieve(
+        self, query: str, top_k: int = 5, file_filter: Optional[str] = None
+    ) -> List[Tuple[Dict[str, Any], float]]:
         """Retrieve top-k documentation chunks with relevance scores."""
         if not self.is_available():
             logger.warning("Documentation index not found at %s", self.index_path)
             return []
-        return self.store.similarity_search(query, top_k=top_k)
+        return self.store.similarity_search(query, top_k=top_k, file_filter=file_filter)
 
     def retrieve_citations(self, query: str, top_k: int = 3) -> List[Citation]:
         """Retrieve top matching documents formatted as structured Citations."""

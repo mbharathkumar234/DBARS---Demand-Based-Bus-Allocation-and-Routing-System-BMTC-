@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, List, Optional
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from app.ai.config import ai_settings
 
 logger = logging.getLogger("bmtc-ai-llm")
+
+OFFLINE_MODEL_NAME = "dbars-grounded-deterministic"
+
+
+def _result(text: str, model_name: str) -> ChatResult:
+    message = AIMessage(content=text, response_metadata={"model_name": model_name})
+    return ChatResult(generations=[ChatGeneration(message=message)])
 
 
 class GroundedDeterministicChatModel(BaseChatModel):
@@ -20,7 +28,9 @@ class GroundedDeterministicChatModel(BaseChatModel):
     strictly refusing to hallucinate unsupported claims.
     """
 
-    model_name: str = "dbars-grounded-deterministic"
+    # Always its own name. It was constructed with the configured Gemini model
+    # name, so offline answers were labelled "gemini-3.6-flash".
+    model_name: str = OFFLINE_MODEL_NAME
 
     @property
     def _llm_type(self) -> str:
@@ -36,7 +46,6 @@ class GroundedDeterministicChatModel(BaseChatModel):
         full_text = "\n".join([m.content for m in messages if isinstance(m.content, str)])
         user_msg = next((m.content for m in reversed(messages) if m.type == "human" and isinstance(m.content, str)), "")
 
-        # Extract context block from prompt
         context_block = ""
         if "Retrieved Evidence:\n" in full_text:
             context_block = full_text.split("Retrieved Evidence:\n")[1].split("\n\nTool Executions:\n")[0]
@@ -48,12 +57,11 @@ class GroundedDeterministicChatModel(BaseChatModel):
         import re
         clean_user_msg = re.sub(r"^(User Question:\s*)+", "", user_msg, flags=re.I).strip()
 
-        from app.ai.rag.lexical_search import LexicalIndex
-        query_terms = set(LexicalIndex._tokenize(clean_user_msg, filter_stops=True))
-        evidence_terms = set(LexicalIndex._tokenize(context_block, filter_stops=True))
+        from app.ai.rag.text import tokenize
+        query_terms = set(tokenize(clean_user_msg))
+        evidence_terms = set(tokenize(context_block))
         overlap = query_terms.intersection(evidence_terms)
 
-        # Detect clear out-of-domain words that have no transit or software presence
         foreign_words = {"nuclear", "mars", "alien", "missile", "weapon", "warfare", "crypto", "bitcoin"}
         has_foreign_words = any(w in query_terms for w in foreign_words)
 
@@ -64,7 +72,6 @@ class GroundedDeterministicChatModel(BaseChatModel):
         has_tool_output = bool(tool_block.strip() and "No tools executed" not in tool_block)
 
         answer_lines: List[str] = []
-
         if has_tool_output:
             answer_lines.append(f"### DBARS Deterministic Tool Results:\n{tool_block.strip()}\n")
 
@@ -76,8 +83,7 @@ class GroundedDeterministicChatModel(BaseChatModel):
                 "In accordance with DBARS grounding rules, this information is UNKNOWN."
             )
 
-        output_text = "\n".join(answer_lines)
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=output_text))])
+        return _result("\n".join(answer_lines), self.model_name)
 
 
 class GeminiChatModel(BaseChatModel):
@@ -85,16 +91,12 @@ class GeminiChatModel(BaseChatModel):
 
     Written against the SDK directly rather than langchain-google-genai so the
     layer needs no dependency beyond the one already declared in
-    requirements.txt. The previous implementation imported
-    ChatGoogleGenerativeAI from langchain_community, where it does not exist --
-    that raised ImportError on every call, was swallowed by a broad except, and
-    silently fell back to the offline model. Gemini was therefore never
-    reachable even with a valid API key.
+    requirements.txt.
     """
 
     model_name: str = "gemini-3.6-flash"
     temperature: float = 0.2
-    max_tokens: int = 1024
+    max_tokens: int = 2048
 
     @property
     def _llm_type(self) -> str:
@@ -132,38 +134,73 @@ class GeminiChatModel(BaseChatModel):
                 max_output_tokens=self.max_tokens,
             ),
         )
-        text = (getattr(response, "text", "") or "").strip()
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
+        # `.text` raises ValueError when the candidate has no text part at all
+        # (every output token spent on reasoning); that propagates so the
+        # resilient wrapper can answer from evidence instead.
+        text = (response.text or "").strip()
+        finish = getattr(getattr(response.candidates[0], "finish_reason", None), "name", "") if response.candidates else ""
+        if finish == "MAX_TOKENS":
+            # A cut-off answer used to be shown as if complete -- one ended
+            # mid-heading at "**Exact Term" under a CONFIRMED badge.
+            text += "\n\n_(Answer truncated at the output token limit.)_"
+        return _result(text, self.model_name)
+
+
+class ResilientChatModel(BaseChatModel):
+    """Gemini first, the grounded model when Gemini fails -- per request.
+
+    Gemini used to be probed once at import; if that one call failed (a 429
+    during a quota spike, a network blip) the process ran offline until it was
+    restarted, and a failure on a later request surfaced as an error message
+    instead of an answer. Each request now tries Gemini and falls back on its
+    own, and the answering model is recorded on the message.
+    """
+
+    primary: BaseChatModel
+    fallback: BaseChatModel
+    model_name: str = "gemini-3.6-flash"
+    # After a failure, skip the primary for this long rather than paying its
+    # latency to fail again on every request of a quota outage.
+    cooldown_seconds: float = 60.0
+    _skip_until: float = 0.0
+
+    @property
+    def _llm_type(self) -> str:
+        return "dbars_resilient"
+
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if time.monotonic() >= self._skip_until:
+            try:
+                return self.primary._generate(messages, stop=stop, **kwargs)
+            except Exception as exc:
+                self._skip_until = time.monotonic() + self.cooldown_seconds
+                logger.warning(
+                    "%s failed (%s: %s); answering from retrieved evidence with the grounded model "
+                    "and skipping %s for %.0fs.",
+                    self.model_name, type(exc).__name__, str(exc)[:200], self.model_name, self.cooldown_seconds,
+                )
+        return self.fallback._generate(messages, stop=stop, **kwargs)
 
 
 def get_chat_model() -> BaseChatModel:
-    """Factory returning a LangChain BaseChatModel based on environment configuration.
+    """The chat model the orchestrator should use.
 
-    Falls back to the grounded deterministic model whenever Gemini is
-    unavailable -- no key, no network, an SDK problem, or a model name the API
-    no longer serves. The fallback is logged at WARNING so a silently offline
-    deployment is visible rather than mistaken for a working LLM.
+    Offline when configured so or when no Gemini key is set; otherwise Gemini
+    with a per-request fallback to the grounded model.
     """
-    if ai_settings.llm_provider == "offline":
-        return GroundedDeterministicChatModel(model_name=ai_settings.model_name)
-
-    if ai_settings.gemini_api_key:
-        try:
-            model = GeminiChatModel(
-                model_name=ai_settings.model_name,
-                temperature=ai_settings.temperature,
-                max_tokens=ai_settings.max_tokens,
-            )
-            # Prove the model is actually reachable now, rather than failing on
-            # the user's first real question.
-            model.invoke([HumanMessage(content="ping")])
-            logger.info("Gemini chat model ready: %s", ai_settings.model_name)
-            return model
-        except Exception as e:
-            logger.warning(
-                "Gemini unavailable (%s: %s); falling back to the grounded deterministic model. "
-                "Answers will be assembled from retrieved evidence rather than generated.",
-                type(e).__name__, str(e)[:200],
-            )
-
-    return GroundedDeterministicChatModel(model_name=ai_settings.model_name)
+    offline = GroundedDeterministicChatModel()
+    if ai_settings.llm_provider == "offline" or not ai_settings.gemini_api_key:
+        return offline
+    gemini = GeminiChatModel(
+        model_name=ai_settings.model_name,
+        temperature=ai_settings.temperature,
+        max_tokens=ai_settings.max_tokens,
+    )
+    logger.info("Chat model: %s, falling back to %s per request", ai_settings.model_name, OFFLINE_MODEL_NAME)
+    return ResilientChatModel(primary=gemini, fallback=offline, model_name=ai_settings.model_name)

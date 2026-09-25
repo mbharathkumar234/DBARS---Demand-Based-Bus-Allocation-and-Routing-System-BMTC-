@@ -4,7 +4,9 @@ import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from app.ai.ingestion.chunking import split_windows
 
 
 @dataclass
@@ -13,12 +15,15 @@ class CodeChunk:
     language: str
     module: str
     symbol: str
-    type: str  # function | method | class | interface | type | component | config | module
+    type: str  # function | method | class | interface | type | enum | component | constant | module_header | module_block | config
     start_line: int
     end_line: int
     content: str
     docstring: Optional[str] = None
     source: str = "repository"
+    # For a window that starts after the definition line: that line, so an
+    # excerpt from the middle of a long function still says which function.
+    signature: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -32,201 +37,245 @@ class CodeChunk:
             "docstring": self.docstring,
             "source": self.source,
             "content": self.content,
+            "signature": self.signature,
         }
+
+
+def _windowed(
+    lines: List[str],
+    start: int,
+    end: int,
+    make: "callable",
+    signature_idx: Optional[int] = None,
+) -> List[CodeChunk]:
+    """Chunks for lines[start..end] (0-based inclusive), split if oversized.
+
+    ``content`` is always an exact slice of the file, so a line offset inside a
+    chunk maps back to a real line number -- citations can then point at the
+    lines that answer the question rather than at the whole construct.
+    """
+    body = lines[start:end + 1]
+    chunks: List[CodeChunk] = []
+    for a, b in split_windows(body):
+        chunk = make(start + a + 1, start + b + 1, "\n".join(body[a:b + 1]))
+        if signature_idx is not None and start + a > signature_idx:
+            chunk.signature = lines[signature_idx].rstrip()
+        chunks.append(chunk)
+    return chunks
+
+
+def _leading_comment_start(lines: List[str], def_start: int, floor: int, prefixes: Tuple[str, ...]) -> int:
+    """Walk up from a definition over the comment block that describes it."""
+    k = def_start
+    while k - 1 >= floor and lines[k - 1].strip().startswith(prefixes):
+        k -= 1
+    return k
 
 
 class PythonCodeParser:
     """AST-based structural parser for Python files."""
 
     @staticmethod
+    def _assigned_names(node: ast.stmt) -> List[str]:
+        targets: List[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        names: List[str] = []
+        for target in targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name):
+                    names.append(sub.id)
+        return names
+
+    @staticmethod
     def parse_file(rel_path: str, code: str) -> List[CodeChunk]:
-        chunks: List[CodeChunk] = []
         lines = code.splitlines()
         total_lines = len(lines)
         module_name = Path(rel_path).stem
+
+        def chunk(symbol: str, ctype: str, docstring: Optional[str] = None):
+            def make(s: int, e: int, text: str) -> CodeChunk:
+                return CodeChunk(
+                    file=rel_path, language="python", module=module_name, symbol=symbol,
+                    type=ctype, start_line=s, end_line=e, content=text, docstring=docstring,
+                )
+            return make
 
         try:
             tree = ast.parse(code, filename=rel_path)
         except Exception:
-            # Fallback for files that cannot be parsed as valid AST
-            return [
-                CodeChunk(
-                    file=rel_path,
-                    language="python",
-                    module=module_name,
-                    symbol=module_name,
-                    type="module",
-                    start_line=1,
-                    end_line=total_lines,
-                    content=code,
-                )
-            ]
+            return _windowed(lines, 0, max(0, total_lines - 1), chunk(module_name, "module"))
 
-        # 1. Module docstring & imports chunk
-        module_doc = ast.get_docstring(tree)
-        imports = []
-        for node in tree.body:
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                imports.append(ast.get_source_segment(code, node) or "")
+        chunks: List[CodeChunk] = []
 
-        if imports or module_doc:
-            import_content = "\n".join(filter(None, [f'"""{module_doc}"""' if module_doc else "", *imports]))
-            chunks.append(
-                CodeChunk(
-                    file=rel_path,
-                    language="python",
-                    module=module_name,
-                    symbol=f"{module_name}.__init__",
-                    type="module_header",
-                    start_line=1,
-                    end_line=min(total_lines, max(10, len(imports) + 5)),
-                    content=import_content,
-                    docstring=module_doc,
-                )
+        def node_start(node: ast.AST) -> int:
+            decorators = getattr(node, "decorator_list", None) or []
+            first = min([d.lineno for d in decorators] + [node.lineno])
+            return first - 1  # 0-based
+
+        # 1. Module header: docstring, imports and the comments among them.
+        body = list(tree.body)
+        header_end = -1
+        for node in body:
+            is_doc = (
+                node is body[0]
+                and isinstance(node, ast.Expr)
+                and isinstance(getattr(node, "value", None), ast.Constant)
+                and isinstance(node.value.value, str)
             )
+            if is_doc or isinstance(node, (ast.Import, ast.ImportFrom)):
+                header_end = node.end_lineno - 1
+            else:
+                break
+        if header_end >= 0:
+            chunks.extend(_windowed(lines, 0, header_end, chunk(f"{module_name}.__init__", "module_header", ast.get_docstring(tree))))
 
-        # 2. Iterate top-level AST nodes
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef):
-                class_doc = ast.get_docstring(node)
-                class_start = getattr(node, "lineno", 1)
-                class_end = getattr(node, "end_lineno", class_start)
+        # 2. Top-level statements in order. Runs of plain statements (constants,
+        # lookup tables, settings objects) become chunks of their own; they
+        # were previously dropped, so QUERY_VOCABULARY or a settings default
+        # was unreachable by any question.
+        prev_end = header_end
+        pending: List[ast.stmt] = []
 
-                # Class overview chunk
-                class_header_lines = lines[class_start - 1 : min(class_end, class_start + 15)]
-                chunks.append(
-                    CodeChunk(
-                        file=rel_path,
-                        language="python",
-                        module=module_name,
-                        symbol=node.name,
-                        type="class",
-                        start_line=class_start,
-                        end_line=class_end,
-                        content="\n".join(class_header_lines),
-                        docstring=class_doc,
-                    )
-                )
+        def flush_pending() -> None:
+            if not pending:
+                return
+            names = [n for stmt in pending for n in PythonCodeParser._assigned_names(stmt)]
+            first = pending[0]
+            start = _leading_comment_start(lines, node_start(first), block_floor[0], ("#",))
+            end = pending[-1].end_lineno - 1
+            if names:
+                symbol = names[0]
+            elif isinstance(first, ast.If) and "__main__" in (ast.get_source_segment(code, first.test) or ""):
+                symbol = "__main__"
+            else:
+                symbol = f"{module_name}:L{start + 1}-L{end + 1}"
+            chunks.extend(_windowed(lines, start, end, chunk(symbol, "module_block")))
+            pending.clear()
 
-                # Methods inside class
-                for sub_node in node.body:
-                    if isinstance(sub_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        method_doc = ast.get_docstring(sub_node)
-                        m_start = getattr(sub_node, "lineno", class_start)
-                        m_end = getattr(sub_node, "end_lineno", m_start)
-                        method_code = "\n".join(lines[m_start - 1 : m_end])
-                        chunks.append(
-                            CodeChunk(
-                                file=rel_path,
-                                language="python",
-                                module=module_name,
-                                symbol=f"{node.name}.{sub_node.name}",
-                                type="method",
-                                start_line=m_start,
-                                end_line=m_end,
-                                content=method_code,
-                                docstring=method_doc,
-                            )
-                        )
+        block_floor = [prev_end + 1]
+        for node in body:
+            if node.end_lineno - 1 <= header_end:
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                flush_pending()
+                start = _leading_comment_start(lines, node_start(node), prev_end + 1, ("#",))
+                if isinstance(node, ast.ClassDef):
+                    chunks.extend(PythonCodeParser._class_chunks(node, lines, start, chunk))
+                else:
+                    chunks.extend(_windowed(
+                        lines, start, node.end_lineno - 1,
+                        chunk(node.name, "function", ast.get_docstring(node)), node.lineno - 1,
+                    ))
+                prev_end = node.end_lineno - 1
+                block_floor[0] = prev_end + 1
+            else:
+                if not pending:
+                    block_floor[0] = prev_end + 1
+                pending.append(node)
+                prev_end = node.end_lineno - 1
+        flush_pending()
+        return chunks
 
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                func_doc = ast.get_docstring(node)
-                f_start = getattr(node, "lineno", 1)
-                f_end = getattr(node, "end_lineno", f_start)
-                func_code = "\n".join(lines[f_start - 1 : f_end])
-                chunks.append(
-                    CodeChunk(
-                        file=rel_path,
-                        language="python",
-                        module=module_name,
-                        symbol=node.name,
-                        type="function",
-                        start_line=f_start,
-                        end_line=f_end,
-                        content=func_code,
-                        docstring=func_doc,
-                    )
-                )
+    @staticmethod
+    def _class_chunks(node: ast.ClassDef, lines: List[str], start: int, chunk) -> List[CodeChunk]:
+        methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        chunks: List[CodeChunk] = []
+        # The class chunk is everything before the first method -- docstring,
+        # fields, enum members -- plus the constructor when it comes first,
+        # since that is where a plain class declares its state and defaults.
+        # It used to be the first 16 lines, which cut a 59-line settings
+        # dataclass off before most of its fields.
+        def def_start(fn: ast.AST) -> int:
+            return min([d.lineno for d in fn.decorator_list] + [fn.lineno]) - 1
 
+        if methods and methods[0].name == "__init__":
+            header_end = methods[0].end_lineno - 1
+            methods = methods[1:]
+        elif methods:
+            header_end = _leading_comment_start(lines, def_start(methods[0]), start, ("#",)) - 1
+        else:
+            header_end = node.end_lineno - 1
+        header_end = max(header_end, start)
+        chunks.extend(_windowed(
+            lines, start, header_end, chunk(node.name, "class", ast.get_docstring(node)), node.lineno - 1,
+        ))
+
+        prev = header_end
+        for method in methods:
+            m_start = _leading_comment_start(lines, def_start(method), prev + 1, ("#",))
+            chunks.extend(_windowed(
+                lines, m_start, method.end_lineno - 1,
+                chunk(f"{node.name}.{method.name}", "method", ast.get_docstring(method)), method.lineno - 1,
+            ))
+            prev = method.end_lineno - 1
         return chunks
 
 
 class TypeScriptCodeParser:
-    """Structure-aware parser for TypeScript and TSX files."""
+    """Declaration-boundary parser for TypeScript and TSX files."""
 
-    INTERFACE_REGEX = re.compile(r"^(?:export\s+)?interface\s+(\w+)", re.MULTILINE)
-    TYPE_REGEX = re.compile(r"^(?:export\s+)?type\s+(\w+)", re.MULTILINE)
-    FUNC_REGEX = re.compile(r"^(?:export\s+)?(?:default\s+)?function\s+(\w+)", re.MULTILINE)
-    CONST_FUNC_REGEX = re.compile(r"^(?:export\s+)?const\s+(\w+)\s*=\s*(?:\([^)]*\)|[a-zA-Z0-9_]+)\s*=>", re.MULTILINE)
+    DECLARATION = re.compile(
+        r"^(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?"
+        r"(function\*?|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)"
+    )
+    FUNCTION_VALUE = re.compile(r"=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=>|=\s*(?:async\s+)?function\b|=\s*(?:React\.)?(?:memo|forwardRef)\(")
+    COMMENT_PREFIXES = ("//", "/*", "*", "*/", "@")
+
+    @classmethod
+    def _declaration_type(cls, keyword: str, name: str, line: str) -> str:
+        if keyword.startswith("function"):
+            return "component" if name[:1].isupper() else "function"
+        if keyword in ("class", "interface", "type", "enum"):
+            return keyword
+        if cls.FUNCTION_VALUE.search(line):
+            return "component" if name[:1].isupper() else "function"
+        return "constant"
 
     @staticmethod
     def parse_file(rel_path: str, code: str) -> List[CodeChunk]:
-        chunks: List[CodeChunk] = []
         lines = code.splitlines()
         total_lines = len(lines)
         module_name = Path(rel_path).stem
 
-        # Extract top-level symbols and line numbers
-        symbols: List[tuple[int, str, str]] = []  # (line_no, symbol_name, type)
+        def chunk(symbol: str, ctype: str):
+            def make(s: int, e: int, text: str) -> CodeChunk:
+                return CodeChunk(
+                    file=rel_path, language="typescript", module=module_name, symbol=symbol,
+                    type=ctype, start_line=s, end_line=e, content=text,
+                )
+            return make
 
-        for i, line in enumerate(lines, start=1):
-            m = TypeScriptCodeParser.INTERFACE_REGEX.match(line)
-            if m:
-                symbols.append((i, m.group(1), "interface"))
+        # Top-level declarations only: they start in column 0. `const
+        # MODE_CONFIG = {...}` used to be invisible here (only arrow functions
+        # counted), so the object defining every assistant mode was folded
+        # into the preceding interface's chunk and cited as "ChatMessage".
+        symbols: List[Tuple[int, str, str, int]] = []  # (start incl. leading comments, name, type, declaration line)
+        prev_start = 0
+        for i, line in enumerate(lines):
+            m = TypeScriptCodeParser.DECLARATION.match(line)
+            if not m:
                 continue
-            m = TypeScriptCodeParser.TYPE_REGEX.match(line)
-            if m:
-                symbols.append((i, m.group(1), "type"))
-                continue
-            m = TypeScriptCodeParser.FUNC_REGEX.match(line)
-            if m:
-                name = m.group(1)
-                sym_type = "component" if name[0].isupper() else "function"
-                symbols.append((i, name, sym_type))
-                continue
-            m = TypeScriptCodeParser.CONST_FUNC_REGEX.match(line)
-            if m:
-                name = m.group(1)
-                sym_type = "component" if name[0].isupper() else "function"
-                symbols.append((i, name, sym_type))
-                continue
+            keyword, name = m.group(1), m.group(2)
+            start = _leading_comment_start(lines, i, prev_start, TypeScriptCodeParser.COMMENT_PREFIXES)
+            symbols.append((start, name, TypeScriptCodeParser._declaration_type(keyword, name, line), i))
+            prev_start = i + 1
 
         if not symbols:
-            # Chunk into ~60 line segments if no prominent symbols
-            step = 60
-            for start in range(0, total_lines, step):
-                end = min(total_lines, start + step)
-                chunks.append(
-                    CodeChunk(
-                        file=rel_path,
-                        language="typescript",
-                        module=module_name,
-                        symbol=f"{module_name}:L{start+1}-L{end}",
-                        type="code_segment",
-                        start_line=start + 1,
-                        end_line=end,
-                        content="\n".join(lines[start:end]),
-                    )
-                )
-            return chunks
+            return _windowed(lines, 0, max(0, total_lines - 1), chunk(module_name, "module"))
 
-        # Chunk between detected symbol boundaries
-        for idx, (line_no, sym_name, sym_type) in enumerate(symbols):
-            next_line = symbols[idx + 1][0] - 1 if idx + 1 < len(symbols) else total_lines
-            content = "\n".join(lines[line_no - 1 : next_line])
-            chunks.append(
-                CodeChunk(
-                    file=rel_path,
-                    language="typescript",
-                    module=module_name,
-                    symbol=sym_name,
-                    type=sym_type,
-                    start_line=line_no,
-                    end_line=next_line,
-                    content=content,
-                )
-            )
+        chunks: List[CodeChunk] = []
+        first_start = symbols[0][0]
+        if first_start > 0 and any(l.strip() for l in lines[:first_start]):
+            chunks.extend(_windowed(lines, 0, first_start - 1, chunk(f"{module_name}.__init__", "module_header")))
 
+        for idx, (start, name, sym_type, decl_line) in enumerate(symbols):
+            end = symbols[idx + 1][0] - 1 if idx + 1 < len(symbols) else total_lines - 1
+            if end < start:
+                continue
+            chunks.extend(_windowed(lines, start, end, chunk(name, sym_type), decl_line))
         return chunks
 
 
@@ -236,37 +285,19 @@ class GenericFileParser:
     @staticmethod
     def parse_file(rel_path: str, content: str, language: str = "config") -> List[CodeChunk]:
         lines = content.splitlines()
-        total_lines = len(lines)
         module_name = Path(rel_path).name
-
-        if total_lines <= 80:
-            return [
-                CodeChunk(
-                    file=rel_path,
-                    language=language,
-                    module=module_name,
-                    symbol=module_name,
-                    type="config",
-                    start_line=1,
-                    end_line=total_lines,
-                    content=content,
-                )
-            ]
-
-        chunks: List[CodeChunk] = []
-        step = 60
-        for start in range(0, total_lines, step):
-            end = min(total_lines, start + step)
-            chunks.append(
-                CodeChunk(
-                    file=rel_path,
-                    language=language,
-                    module=module_name,
-                    symbol=f"{module_name}:L{start+1}-L{end}",
-                    type="config_block",
-                    start_line=start + 1,
-                    end_line=end,
-                    content="\n".join(lines[start:end]),
-                )
+        windows = split_windows(lines)
+        single = len(windows) == 1
+        return [
+            CodeChunk(
+                file=rel_path,
+                language=language,
+                module=module_name,
+                symbol=module_name if single else f"{module_name}:L{a + 1}-L{b + 1}",
+                type="config" if single else "config_block",
+                start_line=a + 1,
+                end_line=b + 1,
+                content="\n".join(lines[a:b + 1]),
             )
-        return chunks
+            for a, b in windows
+        ]
