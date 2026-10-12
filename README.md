@@ -106,121 +106,231 @@ curl -X POST http://localhost:8000/predict \
   -d "{\"current_stop\":\"Silk Board\",\"destination\":\"Marathahalli\",\"limit\":5}"
 ```
 
-## Android APK Build
+## Quick Start: Interview Demo Routine (3-Minute Setup)
 
-The project is configured with Capacitor for Android.
+Follow this exact sequence before starting your demo to ensure all services and database connections are ready:
 
-1. Build the frontend:
-   ```bash
-   cd frontend
-   npm install
-   npm run build
-   ```
-2. Sync with Android:
-   ```bash
-   npx cap sync
-   ```
-3. Open in Android Studio or build via CLI:
-   ```bash
-   npx cap open android
-   # OR
-   cd android
-   ./gradlew assembleDebug
-   ```
+### 1. Start MongoDB (via Docker Desktop)
+> **Prerequisite:** Open **Docker Desktop** from your Windows Start Menu and ensure the engine status is green.
 
-The generated APK will be in `frontend/android/app/build/outputs/apk/debug/app-debug.apk`.
+From the project root (`dbars/`):
+```powershell
+docker compose up -d mongo
+```
+*(Verify it prints `Container dbars-mongo-1 Started`)*
 
-## Local Setup
-
-### Backend:
-
-```bash
+### 2. Seed Database & Accounts (Run once or after resetting Mongo)
+```powershell
 cd backend
-python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m app.db.seed
+```
+*Creates the admin/depot demo users and indexes. Runs silently with code 0 on success.*
+
+### 3. Start Backend & Frontend
+
+You can start both simultaneously using the root helper script:
+```powershell
+.\start_all.ps1
 ```
 
-### Database Seeding (Optional):
-```bash
+Or run them in two separate PowerShell terminals:
+
+- **Terminal 1 (Backend API):**
+  ```powershell
+  cd backend
+  .venv\Scripts\activate
+  python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+  ```
+  *Live at: http://localhost:8000 (Swagger docs: http://localhost:8000/docs)*
+
+- **Terminal 2 (Frontend UI):**
+  ```powershell
+  cd frontend
+  npm run dev
+  ```
+  *Live at: http://localhost:5173*
+
+---
+
+### Demo Accounts for Presentation
+
+| Role | Email | Password | Permissions & Features |
+| :--- | :--- | :--- | :--- |
+| **System Admin** | `admin@bmtc.ai` | `admin123` | Full dashboard, fleet analytics, Shakti scheme claims, audit logs, AI observability |
+| **Depot Manager** | `depot@bmtc.ai` | `depot123` | Blocking scenarios, crew duty planning, waybills & depot rosters |
+| **Commuter / Public** | Any new signup | *(User chosen)* | Route prediction, real-time tracking, voting, e-ticket booking, digital pass QR |
+
+---
+
+## Detailed Local Setup
+
+### 1. Backend Setup
+
+- **Python Version:** Python 3.11 or 3.12 is recommended (Python 3.14 lacks prebuilt wheels for FAISS and C-extensions).
+- Run commands from `backend/`:
+
+```powershell
 cd backend
+
+# Create virtual environment
+py -3.11 -m venv .venv
+
+# Activate environment on Windows
+.venv\Scripts\activate
+
+# Upgrade pip & install backend dependencies
+# Note: Always use 'python -m pip' on Windows to avoid application execution alias blocks
+python -m pip install -r requirements.txt
+```
+
+### 2. Database (MongoDB) Details
+
+- **Standalone vs Database-backed features:**
+  - **Core Bus Route Prediction (`BMTCBusPredictor`):** Works 100% standalone and in-memory from `dataset/routes_cleaned.csv`. It requires no database at all.
+  - **Accounts, Login, Voting, E-Ticketing, and Depot/Admin:** Require MongoDB running on `mongodb://localhost:27017`.
+- **Important Startup Order:** Always start MongoDB **before** launching `uvicorn`. If the backend starts while MongoDB is offline, it activates circuit-breaker fallback mode (503 for auth). If this happens, start MongoDB and restart `uvicorn`.
+
+To start MongoDB with Docker:
+```powershell
+# In project root:
+docker compose up -d mongo
+```
+
+To seed the initial database (admin/depot accounts, collections, and indexes):
+```powershell
+cd backend
+.venv\Scripts\activate
 python -m app.db.seed
 ```
 
-### Frontend:
+### 3. Frontend Setup
 
-```bash
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
+Open **http://localhost:5173** in your browser.
 
-Open http://localhost:5173.
+---
 
-## Training
-```bash
+## Model Training & Index Pre-building
+
+### Route Prediction ML Training
+The backend automatically initializes and trains the hybrid ranker model in memory upon startup. If you want to run the standalone benchmark training script to regenerate `backend/artifacts/metrics.json`:
+
+```powershell
 cd backend
+.venv\Scripts\activate
 python train.py
 ```
 
-The training job reads `dataset/routes_cleaned.csv`, evaluates candidate models, selects the transfer search ranker, and writes metrics to `backend/artifacts/metrics.json`.
+### AI Intelligence RAG Indices (Optional)
+Build the local vector search indices for the AI Codebase and Operations assistants:
 
-## AI Intelligence Layer
-
-An additive assistant over the deterministic engine: codebase and documentation
-RAG, read-only DBARS tools, grounding checks, and role-based access. It cannot
-modify anything, and `app/main.py` imports it defensively so a failure there
-can never stop route prediction from starting.
-
-```
-GET  /ai/health                    public readiness
-POST /ai/chat                      authenticated; role checks match the REST API
-GET  /ai/session/{id}/history      own sessions only
-GET  /ai/observability/*           admin
-POST /ai/evaluation/run            admin
-```
-
-The search indices are build artifacts and are not committed. Build them once:
-
-```bash
+```powershell
 cd backend
-python -m app.ai.ingestion.pipeline        # code index
-python -m app.ai.ingestion.doc_pipeline    # documentation index
+.venv\Scripts\activate
+python -m app.ai.ingestion.pipeline        # Codebase index
+python -m app.ai.ingestion.doc_pipeline    # Documentation index
 ```
+*(Without these indices, the AI assistant still functions using deterministic transit tools; with them, it cites exact codebase files and documentation).*
 
-Without them the assistant still answers from the deterministic tools; it just
-cannot cite source files. Optional `GEMINI_API_KEY` enables a hosted LLM —
-without it the layer uses a grounded deterministic model that assembles answers
-from retrieved evidence. Sections 40-42 of `docs/DBARS_Project_Defense_and_Codebase_Mastery.docx`
-cover the architecture, the security model, the defects it exposed in the
-routing engine, and -- in section 42 -- what was measured versus what was only
-claimed.
+---
 
-## Testing
-```bash
+## Testing & Code Quality
+
+### Running the Full Test Suite
+The project includes 757 unit and integration tests covering the ML models, scheduling algorithms, GTFS feed generator, and AI components:
+
+```powershell
 cd backend
-pytest tests
+.venv\Scripts\activate
+
+# Use 'python -m pytest' to ensure the virtual environment's pytest is used
+python -m pytest tests
+```
+> **Note:** The full test suite takes approximately **5 to 8 minutes** to run completely because it tests local vector embeddings, ML rankers, and scenario models.
+
+### Fast Syntax & Compilation Check
+To quickly verify all backend Python files are valid without waiting for tests:
+```powershell
+cd backend
+.venv\Scripts\activate
 python -m compileall app
+```
 
-cd ../frontend
+### Frontend Build Test
+To verify TypeScript types and production frontend bundling:
+```powershell
+cd frontend
 npm run build
 ```
 
-## Docker
+---
+
+## Common Troubleshooting & FAQ (Interview Prep)
+
+#### 1. "Failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine"
+- **Cause:** Docker Desktop is closed.
+- **Fix:** Launch **Docker Desktop** from the Windows Start menu, wait until its engine finishes starting (icon turns steady green in the system tray), then re-run `docker compose up -d mongo`.
+
+#### 2. Red toast: "This feature requires a database connection, which is currently unavailable..."
+- **Cause:** You tried to login, register, or access tickets while MongoDB was not running, or `uvicorn` was started before MongoDB was ready.
+- **Fix:**
+  1. Verify MongoDB is running: `docker compose up -d mongo`
+  2. Seed data if not already done: `python -m app.db.seed` (from `backend/` with `.venv` active)
+  3. Restart the `uvicorn` backend terminal so it establishes a fresh database connection.
+
+#### 3. `ModuleNotFoundError: No module named 'app'` when seeding
+- **Cause:** The command was executed from the root directory `dbars` instead of the `backend/` folder.
+- **Fix:**
+  ```powershell
+  cd backend
+  .venv\Scripts\activate
+  python -m app.db.seed
+  ```
+
+#### 4. `ModuleNotFoundError: No module named 'langchain_core'` during pytest
+- **Cause:** Running plain `pytest` used a global Python interpreter outside the virtual environment.
+- **Fix:** Always invoke pytest through the virtual environment's python:
+  ```powershell
+  cd backend
+  .venv\Scripts\activate
+  python -m pytest tests
+  ```
+
+#### 5. Backend port 8000 already in use / zombie python processes
+- If you restarted uvicorn and get `[WinError 10048] address already in use`, close existing python workers in PowerShell:
+  ```powershell
+  Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
+  ```
+  Then restart `uvicorn`.
+
+---
+
+## Docker Full-Stack Deployment
+
+To run the entire system (Frontend, Backend, and MongoDB) inside Docker containers:
+
 ```bash
 docker compose up --build
 ```
 
 - Frontend: http://localhost:8080
 - Backend: http://localhost:8000
+- MongoDB: localhost:27017
 
-## Deployment
+---
 
-Vercel can host the frontend with `vercel.json`; set `VITE_API_URL` to the deployed backend URL. Render can deploy both services with `deployment/render.yaml`. Railway, AWS, GCP, or Azure can use the Dockerfiles directly.
+## Deployment & Environment Variables
 
-Recommended environment variables:
+The project is structured to deploy on platforms like Render, Railway, AWS, or GCP:
+- Frontend on Vercel: set `VITE_API_URL` to your backend domain.
+- Backend on Render: see `deployment/render.yaml`.
 
+Key environment configuration:
 ```
 DATASET_PATH=/app/dataset/routes_cleaned.csv
 STOP_COORDINATES_PATH=/app/dataset/stops_cleaned.csv
@@ -229,27 +339,7 @@ FARES_DATASET_PATH=/app/dataset/fares.json
 ARTIFACT_DIR=/app/artifacts
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://localhost
 RATE_LIMIT_PER_MINUTE=120
-VITE_API_URL=https://your-backend-domain.com
+MONGO_URI=mongodb://mongo:27017
 JWT_SECRET_KEY=your-secure-jwt-secret
 PASS_VERIFICATION_SECRET=your-pass-secret
 ```
-
-`GOOGLE_MAPS_API_KEY` is optional. Without it, the app still trains the full stop-pair model and uses `dataset/stops_cleaned.csv` coordinates for free route-distance estimates.
-
-Optional, for the operations features:
-
-```
-GTFS_BUILD_ON_STARTUP=true      set false on small dev machines
-GTFS_RT_ALLOW_SIMULATED=false   local development only; never in a deployment
-TRACKING_FEED=simulated         simulated | gtfs_rt | http_json | push
-TRACKING_FEED_URL=              upstream feed, for gtfs_rt / http_json
-TRACKING_FEED_FIELD_MAP=        JSON field map, for http_json
-AVL_STALE_SECONDS=120           older positions are withheld, not shown
-AVL_INGEST_KEY=                 required for POST /avl/ingest; unset refuses all
-PASS_SIGNING_KEY=               signs travel passes; own domain, own key
-DEMO_PASS_MODE=false            accept unsigned pass ids for a demonstration
-```
-
-## Database
-
-Bus route prediction (`BMTCBusPredictor`) needs no database at all: the CSV is the training source and the trained model lives in memory. Account, voting, ticketing, and admin/depot features use MongoDB (`backend/app/db/database.py`), configured via the `MONGO_URI` environment variable (defaults to `mongodb://localhost:27017`; `docker-compose.yml` runs a local mongo service for this). If MongoDB isn't reachable, those features degrade gracefully and route prediction is unaffected.

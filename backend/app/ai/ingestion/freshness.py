@@ -149,19 +149,22 @@ def ensure_indices(block_on_stale: bool = False) -> Dict[str, str]:
 
 
 def _rebuild(kinds: List[str], embedder) -> None:
-    from app.ai.ingestion.doc_pipeline import run_doc_ingestion
-    from app.ai.ingestion.pipeline import run_codebase_ingestion
+    try:
+        from app.ai.ingestion.doc_pipeline import run_doc_ingestion
+        from app.ai.ingestion.pipeline import run_codebase_ingestion
 
-    for kind in kinds:
-        started = time.perf_counter()
-        try:
-            report = run_codebase_ingestion(embedder) if kind == "code" else run_doc_ingestion(embedder)
-            logger.info(
-                "Rebuilt %s index: %s chunks in %.1fs", kind, report.get("chunks_created"),
-                time.perf_counter() - started,
-            )
-        except Exception:
-            logger.exception("Rebuilding the %s index failed; retrieval keeps the previous one", kind)
-            continue
-        from app.ai.rag.hybrid_retriever import hybrid_retriever
-        hybrid_retriever.reload(kind)
+        for kind in kinds:
+            started = time.perf_counter()
+            try:
+                report = run_codebase_ingestion(embedder) if kind == "code" else run_doc_ingestion(embedder)
+                logger.info(
+                    "Rebuilt %s index: %s chunks in %.1fs", kind, report.get("chunks_created"),
+                    time.perf_counter() - started,
+                )
+            except Exception:
+                logger.exception("Rebuilding the %s index failed; retrieval keeps the previous one", kind)
+                continue
+            from app.ai.rag.hybrid_retriever import hybrid_retriever
+            hybrid_retriever.reload(kind)
+    except Exception:
+        logger.exception("Background AI index refresh failed to initialize")

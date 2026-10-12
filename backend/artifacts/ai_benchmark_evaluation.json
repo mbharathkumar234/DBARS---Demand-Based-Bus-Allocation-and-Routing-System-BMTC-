@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-22T09:48:15.767766+00:00",
+  "timestamp": "2026-10-12T12:06:11.746614+00:00",
   "total_questions": 2,
   "passed_questions": 1,
   "overall_accuracy": 0.5,
@@ -9,7 +9,7 @@
   "overall_hallucination_rate": 0.0,
   "overall_tool_correctness": 1.0,
   "overall_citation_precision": 1.0,
-  "avg_latency_ms": 12.03,
+  "avg_latency_ms": 86.84,
   "category_summaries": {
     "code_understanding": {
       "category": "code_understanding",
@@ -22,7 +22,7 @@
       "hallucination_rate": 0.0,
       "avg_tool_correctness": 1.0,
       "avg_citation_precision": 1.0,
-      "avg_latency_ms": 12.03
+      "avg_latency_ms": 86.84
     }
   },
   "results": [
@@ -31,7 +31,7 @@
       "category": "code_understanding",
       "question": "How does the ML passenger demand predictor work in predictor.py?",
       "answer": "### 1. Direct Answer\n`BMTCBusPredictor` in `backend/app/ml/predictor.py` is the deterministic route-search engine. `predict()` resolves the two stop names to canonical stops, finds routes that serve them in order through the ordered stop-pair index, ranks the candidates, and suggests transfer journeys when no direct route exists.\n\n### 2. Relevant Source Files\n- `backend/app/ml/predictor.py`\n- `backend/app/api/routes.py`\n- `backend/app/ai/agents/codebase_agent.py`\n\n### 3. Relevant Functions / Classes\n- `BMTCBusPredictor`\n- `BMTCBusPredictor.predict`\n- `predictor.__init__`\n- `BMTCBusPredictor.train`\n- `depot_dispatch_recommendations`\n- `TOPICS`\n\n### 4. Execution Flow\n1. The commuter's origin and destination arrive at `POST /predict` in `backend/app/api/routes.py`.\n2. `_resolve_stop_name()` maps each typed name to a canonical stop.\n3. `stop_pair_to_segments` returns route segments that serve both stops in that order.\n4. Candidates are scored and ranked (`route_rank_score`), with TF-IDF similarity from `TfidfIndex`.\n5. With no direct route, `_find_transfer_suggestions()` searches one-transfer journeys.\n6. The best match and alternatives are returned as JSON.\n\n### 5. Architectural Reasoning\nThe engine is deterministic and needs neither a database nor a language model: the same query over the same timetable always produces the same ranking.\n\n### 6. Evidence & Source References\n[1] backend/app/ml/predictor.py (lines 1–20) [`predictor.__init__`]\n[2] backend/app/ml/predictor.py (lines 135–150) [`BMTCBusPredictor.train`]\n[3] backend/app/api/routes.py (lines 119–143) [`depot_dispatch_recommendations`]\n[4] backend/app/ai/agents/codebase_agent.py (lines 158–170) [`TOPICS`]\n\n### 7. Uncertainty & Limitations\n✅ Confirmed by authoritative DBARS source code.",
-      "latency_ms": 9.25,
+      "latency_ms": 88.04,
       "passed": true,
       "answer_correctness": 0.6,
       "retrieval_relevance": 1.0,
@@ -54,7 +54,7 @@
       "category": "code_understanding",
       "question": "What is the vehicle blocking algorithm implemented in blocking.py?",
       "answer": "### Grounding Verification Warning\n\nThe response contained ungrounded or fabricated claims that could not be verified against the DBARS codebase or transit data:\n- ⚠️ **Flagged Claim**: Unverified symbol 'max_deadhead_km' not found in DBARS codebase.\n\n> [!CAUTION]\n> **Grounding Downgrade**: Status marked as `UNKNOWN` under DBARS Grounding Rules.",
-      "latency_ms": 14.8,
+      "latency_ms": 85.64,
       "passed": false,
       "answer_correctness": 0.2,
       "retrieval_relevance": 1.0,

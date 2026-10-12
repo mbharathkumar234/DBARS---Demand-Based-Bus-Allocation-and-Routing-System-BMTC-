@@ -39,6 +39,8 @@ langchain-text-splitters==0.3.5
 faiss-cpu==1.14.3
 # Local embedding model (all-MiniLM-L6-v2). Runs offline; no API key needed.
 sentence-transformers==5.5.1
+# Document parser for technical specifications and defense notes (.docx)
+python-docx>=1.1.0
 # Optional hosted LLM. Without GEMINI_API_KEY the layer falls back to the
 # deterministic grounded model in app/ai/llm/client.py.
 google-generativeai==0.8.6

@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
-import docx
+try:
+    import docx
+except ImportError:
+    docx = None
 
 from app.ai.ingestion.chunking import split_windows
 
@@ -104,6 +106,8 @@ def docx_blocks(file_path: Path) -> Iterator[Tuple[str, str]]:
     settings, the security audit. Walking the body element keeps them, in
     place, next to the heading they belong to.
     """
+    if docx is None:
+        return
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
